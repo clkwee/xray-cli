@@ -34,7 +34,7 @@ sudo apt install redsocks
 
 ### 2. Install xray-cli
 ```bash
-sudo curl -L https://raw.githubusercontent.com/YOUR-USERNAME/xray-cli/main/xray-cli -o /usr/local/bin/xray-cli
+sudo curl -L https://raw.githubusercontent.com/clkwee/xray-cli/main/xray-cli -o /usr/local/bin/xray-cli
 sudo chmod +x /usr/local/bin/xray-cli
 ```
 
