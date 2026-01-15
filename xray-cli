@@ -1,0 +1,613 @@
+#!/usr/bin/env python3
+"""
+Xray CLI - Manage Xray proxy and TUN mode
+Simple tool to manage your Xray proxy connection
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+import shutil
+import time
+from pathlib import Path
+from typing import Dict, Optional
+
+# Configuration paths
+CONFIG_DIR = Path.home() / ".config" / "xray-cli"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+XRAY_CONFIG = CONFIG_DIR / "xray.json"
+REDSOCKS_CONFIG = "/etc/redsocks.conf"
+
+# Colors for pretty output
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    END = '\033[0m'
+
+def print_success(msg):
+    print(f"{Colors.GREEN}✓{Colors.END} {msg}")
+
+def print_info(msg):
+    print(f"{Colors.BLUE}ℹ{Colors.END} {msg}")
+
+def print_warning(msg):
+    print(f"{Colors.YELLOW}⚠{Colors.END} {msg}")
+
+def print_error(msg):
+    print(f"{Colors.RED}✗{Colors.END} {msg}", file=sys.stderr)
+
+
+def ensure_config_dir():
+    """Make sure config directory exists"""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def parse_vless_url(url: str) -> Dict[str, str]:
+    """
+    Parse vless:// URL and extract all the settings
+    
+    Format: vless://UUID@IP:PORT?params#remark
+    """
+    if not url.startswith("vless://"):
+        raise ValueError("URL must start with vless://")
+    
+    # Remove vless:// prefix
+    url = url[8:]
+    
+    # Split by # to get remark (optional)
+    if "#" in url:
+        url, remark = url.split("#", 1)
+    
+    # Split by ? to get parameters
+    if "?" in url:
+        base, params_str = url.split("?", 1)
+    else:
+        base = url
+        params_str = ""
+    
+    # Parse base: UUID@IP:PORT
+    if "@" not in base:
+        raise ValueError("Missing @ separator in URL")
+    
+    uuid, server = base.split("@", 1)
+    
+    # Parse server: IP:PORT
+    if ":" not in server:
+        raise ValueError("Missing port in URL")
+    
+    parts = server.rsplit(":", 1)
+    if len(parts) != 2:
+        raise ValueError("Invalid server format")
+    
+    server_ip = parts[0]
+    try:
+        server_port = int(parts[1])
+    except ValueError:
+        raise ValueError("Port must be a number")
+    
+    # Parse query parameters
+    params = {}
+    if params_str:
+        for param in params_str.split("&"):
+            if "=" in param:
+                key, value = param.split("=", 1)
+                params[key] = urllib.parse.unquote(value)
+    
+    config = {
+        "uuid": uuid,
+        "server_ip": server_ip,
+        "server_port": server_port,
+        "security": params.get("security", "reality"),
+        "pbk": params.get("pbk", ""),
+        "sid": params.get("sid", ""),
+        "fp": params.get("fp", "chrome"),
+        "flow": params.get("flow", "xtls-rprx-vision"),
+        "spx": params.get("spx", "/"),
+    }
+    
+    return config
+
+
+def generate_xray_config(vless_config: Dict) -> Dict:
+    """Create the Xray JSON config file content"""
+    config = {
+        "inbounds": [
+            {
+                "listen": "127.0.0.1",
+                "port": 1080,
+                "protocol": "socks",
+                "settings": {
+                    "udp": True
+                }
+            }
+        ],
+        "outbounds": [
+            {
+                "tag": "proxy",
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [
+                        {
+                            "address": vless_config["server_ip"],
+                            "port": vless_config["server_port"],
+                            "users": [
+                                {
+                                    "id": vless_config["uuid"],
+                                    "encryption": "none",
+                                    "flow": vless_config["flow"]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "streamSettings": {
+                    "network": "tcp",
+                    "security": vless_config["security"],
+                    "realitySettings": {
+                        "publicKey": vless_config["pbk"],
+                        "shortId": vless_config["sid"],
+                        "fingerprint": vless_config["fp"],
+                        "spiderX": vless_config["spx"]
+                    }
+                }
+            }
+        ]
+    }
+    return config
+
+
+def get_config_from_url(url: str) -> Dict:
+    """Get vless:// config from URL or parse it directly"""
+    # If it's already a vless:// URL, just parse it
+    if url.startswith("vless://"):
+        return parse_vless_url(url)
+    
+    # Otherwise, download it from the URL
+    print_info(f"Fetching config from {url}...")
+    try:
+        import requests
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        vless_url = response.text.strip()
+    except ImportError:
+        # Use curl if requests library not installed
+        try:
+            result = subprocess.run(
+                ["curl", "-sL", url],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            vless_url = result.stdout.strip()
+        except FileNotFoundError:
+            raise RuntimeError("Neither 'requests' library nor 'curl' found. Install one of them.")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to download config: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch config: {e}")
+    
+    return parse_vless_url(vless_url)
+
+
+def save_config(config: Dict):
+    """Save the parsed config to disk"""
+    ensure_config_dir()
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+    print_success(f"Config saved to {CONFIG_FILE}")
+
+
+def load_config() -> Optional[Dict]:
+    """Load saved config from disk"""
+    if not CONFIG_FILE.exists():
+        return None
+    with open(CONFIG_FILE, "r") as f:
+        return json.load(f)
+
+
+def write_xray_config(vless_config: Dict):
+    """Write the Xray JSON config file"""
+    ensure_config_dir()
+    xray_config = generate_xray_config(vless_config)
+    with open(XRAY_CONFIG, "w") as f:
+        json.dump(xray_config, f, indent=2)
+    print_success(f"Xray config written to {XRAY_CONFIG}")
+
+
+def check_root():
+    """Check if we're running as root (needed for some commands)"""
+    if os.geteuid() != 0:
+        print_error("This command needs root privileges")
+        print_info("Run with: sudo xray-cli ...")
+        sys.exit(1)
+
+
+def find_executable(name: str) -> Optional[str]:
+    """Find if a program is installed"""
+    return shutil.which(name)
+
+
+def is_xray_running() -> bool:
+    """Check if Xray is currently running"""
+    result = subprocess.run(["pgrep", "-f", "xray run"], capture_output=True)
+    return result.returncode == 0
+
+
+def is_redsocks_running() -> bool:
+    """Check if redsocks is currently running"""
+    result = subprocess.run(["pgrep", "redsocks"], capture_output=True)
+    return result.returncode == 0
+
+
+def is_tun_enabled() -> bool:
+    """Check if TUN mode (iptables rules) is active"""
+    result = subprocess.run(
+        ["iptables", "-t", "nat", "-L", "REDSOCKS"],
+        capture_output=True,
+        stderr=subprocess.DEVNULL
+    )
+    return result.returncode == 0
+
+
+def show_status():
+    """Show current status of everything"""
+    print("=" * 50)
+    print("Xray CLI Status")
+    print("=" * 50)
+    
+    # Check if config exists
+    config = load_config()
+    if config:
+        print_success(f"Config found: {config['server_ip']}:{config['server_port']}")
+    else:
+        print_warning("No config found (run 'get-config' first)")
+    
+    # Check Xray
+    if is_xray_running():
+        print_success("Xray proxy: Running (SOCKS5 on 127.0.0.1:1080)")
+    else:
+        print_warning("Xray proxy: Stopped")
+    
+    # Check redsocks
+    if is_redsocks_running():
+        print_success("Redsocks: Running")
+    else:
+        print_info("Redsocks: Stopped")
+    
+    # Check TUN mode
+    if is_tun_enabled():
+        print_success("TUN mode: Enabled (all traffic routed)")
+    else:
+        print_info("TUN mode: Disabled")
+    
+    print("=" * 50)
+
+
+def start_proxy():
+    """Start the Xray proxy"""
+    check_root()
+    
+    # Check if we have a config
+    config = load_config()
+    if not config:
+        print_error("No config found!")
+        print_info("First run: xray-cli get-config <your-vless-url>")
+        sys.exit(1)
+    
+    # Make sure xray is installed
+    xray_path = find_executable("xray")
+    if not xray_path:
+        print_error("Xray not found! Install it first:")
+        print_info('sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install')
+        sys.exit(1)
+    
+    # Check if already running
+    if is_xray_running():
+        print_warning("Xray is already running!")
+        return
+    
+    # Write config and start
+    write_xray_config(config)
+    
+    subprocess.Popen(
+        [xray_path, "run", "-c", str(XRAY_CONFIG)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    
+    # Give it a moment to start
+    time.sleep(1)
+    
+    if is_xray_running():
+        print_success("Xray started! SOCKS5 proxy on 127.0.0.1:1080")
+    else:
+        print_error("Failed to start Xray. Check the logs.")
+        sys.exit(1)
+
+
+def stop_proxy():
+    """Stop the Xray proxy"""
+    check_root()
+    
+    if not is_xray_running():
+        print_info("Xray is not running")
+        return
+    
+    result = subprocess.run(["pkill", "xray"], capture_output=True)
+    if result.returncode == 0:
+        print_success("Xray stopped")
+    else:
+        print_warning("Failed to stop Xray")
+
+
+def start_tun():
+    """Start TUN mode (routes all system traffic through proxy)"""
+    check_root()
+    
+    # Make sure xray is running first
+    if not is_xray_running():
+        print_warning("Xray is not running. Starting it first...")
+        start_proxy()
+        time.sleep(1)
+    
+    # Check for redsocks
+    redsocks_path = find_executable("redsocks")
+    if not redsocks_path:
+        print_error("Redsocks not found! Install it first:")
+        print_info("Arch/Manjaro: yay -S redsocks")
+        print_info("Ubuntu/Debian: sudo apt install redsocks")
+        sys.exit(1)
+    
+    # Check if redsocks config exists
+    if not Path(REDSOCKS_CONFIG).exists():
+        print_error(f"Redsocks config not found at {REDSOCKS_CONFIG}")
+        print_info("Create it with this content:")
+        print("""
+base {
+  log_debug = on;
+  log_info = on;
+  log = "file:/var/log/redsocks.log";
+  daemon = on;
+  redirector = iptables;
+}
+redsocks {
+  local_ip = 127.0.0.1;
+  local_port = 2525;
+  ip = 127.0.0.1;
+  port = 1080;
+  type = socks5;
+}
+        """)
+        sys.exit(1)
+    
+    # Start redsocks if not running
+    if not is_redsocks_running():
+        subprocess.Popen([redsocks_path, "-c", REDSOCKS_CONFIG])
+        print_success("Redsocks started")
+        time.sleep(1)
+    else:
+        print_info("Redsocks already running")
+    
+    # Clean up old rules (just in case)
+    subprocess.run(
+        ["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", 
+         "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"],
+        capture_output=True,
+        stderr=subprocess.DEVNULL
+    )
+    subprocess.run(["iptables", "-t", "nat", "-F", "REDSOCKS"], 
+                   capture_output=True, stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-t", "nat", "-X", "REDSOCKS"], 
+                   capture_output=True, stderr=subprocess.DEVNULL)
+    
+    # Set up new rules
+    try:
+        subprocess.run(["iptables", "-t", "nat", "-N", "REDSOCKS"], 
+                      check=True, capture_output=True)
+        subprocess.run(["iptables", "-t", "nat", "-A", "REDSOCKS", 
+                       "-d", "127.0.0.0/8", "-j", "RETURN"], 
+                      check=True, capture_output=True)
+        subprocess.run(["iptables", "-t", "nat", "-A", "REDSOCKS", 
+                       "-p", "tcp", "-j", "REDIRECT", "--to-ports", "2525"], 
+                      check=True, capture_output=True)
+        subprocess.run(["iptables", "-t", "nat", "-A", "OUTPUT", 
+                       "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", 
+                       "-j", "REDSOCKS"], 
+                      check=True, capture_output=True)
+        print_success("TUN mode enabled! All TCP traffic now routed through Xray")
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed to set up iptables rules: {e}")
+        sys.exit(1)
+
+
+def stop_tun():
+    """Stop TUN mode"""
+    check_root()
+    
+    # Remove iptables rules
+    subprocess.run(
+        ["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", 
+         "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"],
+        capture_output=True,
+        stderr=subprocess.DEVNULL
+    )
+    subprocess.run(["iptables", "-t", "nat", "-F", "REDSOCKS"], 
+                   capture_output=True, stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-t", "nat", "-X", "REDSOCKS"], 
+                   capture_output=True, stderr=subprocess.DEVNULL)
+    
+    # Stop redsocks
+    if is_redsocks_running():
+        subprocess.run(["pkill", "redsocks"], capture_output=True)
+        print_success("Redsocks stopped")
+    
+    print_success("TUN mode disabled")
+
+
+def run_app(app_name: str, *args):
+    """Run an app with proxy settings"""
+    config = load_config()
+    if not config:
+        print_error("No config found!")
+        print_info("First run: xray-cli get-config <your-vless-url>")
+        sys.exit(1)
+    
+    # Make sure xray is running
+    if not is_xray_running():
+        print_warning("Xray is not running. Starting it...")
+        if os.geteuid() != 0:
+            print_error("Need root to start Xray")
+            print_info("Run: sudo xray-cli proxy start")
+            sys.exit(1)
+        start_proxy()
+        time.sleep(1)
+    
+    # Find the app
+    app_path = find_executable(app_name)
+    if not app_path:
+        print_error(f"{app_name} not found!")
+        sys.exit(1)
+    
+    # Set up proxy environment
+    env = os.environ.copy()
+    env["http_proxy"] = "socks5://127.0.0.1:1080"
+    env["https_proxy"] = "socks5://127.0.0.1:1080"
+    env["ALL_PROXY"] = "socks5://127.0.0.1:1080"
+    
+    print_info(f"Launching {app_name} with proxy...")
+    
+    # Special handling for browsers
+    if any(browser in app_name.lower() for browser in ["chromium", "chrome", "brave"]):
+        chromium_args = [
+            app_path,
+            f"--proxy-server=socks5://127.0.0.1:1080",
+            *args
+        ]
+        subprocess.run(chromium_args, env=env)
+    else:
+        subprocess.run([app_path, *args], env=env)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Xray CLI - Easy proxy management for beginners",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # First time setup
+  xray-cli get-config "vless://your-config-url"
+  
+  # Start proxy
+  sudo xray-cli proxy start
+  
+  # Check status
+  xray-cli status
+  
+  # Enable system-wide routing
+  sudo xray-cli tun start
+  
+  # Run a specific app with proxy
+  xray-cli run firefox
+  
+  # Stop everything
+  sudo xray-cli tun stop
+  sudo xray-cli proxy stop
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # get-config command
+    get_config_parser = subparsers.add_parser(
+        "get-config", 
+        help="Download and save your vless:// config"
+    )
+    get_config_parser.add_argument(
+        "url", 
+        help="URL to download config from, or paste vless:// URL directly"
+    )
+    
+    # status command
+    subparsers.add_parser("status", help="Show current status of everything")
+    
+    # proxy commands
+    proxy_parser = subparsers.add_parser("proxy", help="Control the proxy")
+    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_action")
+    proxy_subparsers.add_parser("start", help="Start Xray proxy")
+    proxy_subparsers.add_parser("stop", help="Stop Xray proxy")
+    
+    # tun commands
+    tun_parser = subparsers.add_parser(
+        "tun", 
+        help="Control TUN mode (routes all system traffic)"
+    )
+    tun_subparsers = tun_parser.add_subparsers(dest="tun_action")
+    tun_subparsers.add_parser("start", help="Enable TUN mode")
+    tun_subparsers.add_parser("stop", help="Disable TUN mode")
+    
+    # run command
+    run_parser = subparsers.add_parser(
+        "run", 
+        help="Run a specific app with proxy"
+    )
+    run_parser.add_argument("app", help="App name (e.g., firefox, chromium)")
+    run_parser.add_argument(
+        "args", 
+        nargs=argparse.REMAINDER, 
+        help="Extra arguments for the app"
+    )
+    
+    args = parser.parse_args()
+    
+    # Show help if no command given
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    
+    # Run the requested command
+    try:
+        if args.command == "get-config":
+            config = get_config_from_url(args.url)
+            save_config(config)
+            print_success("Config saved successfully!")
+            print_info(f"Server: {config['server_ip']}:{config['server_port']}")
+            print_info(f"UUID: {config['uuid'][:8]}...")
+            print_info(f"Security: {config['security']}")
+            
+        elif args.command == "status":
+            show_status()
+            
+        elif args.command == "proxy":
+            if args.proxy_action == "start":
+                start_proxy()
+            elif args.proxy_action == "stop":
+                stop_proxy()
+            else:
+                proxy_parser.print_help()
+                
+        elif args.command == "tun":
+            if args.tun_action == "start":
+                start_tun()
+            elif args.tun_action == "stop":
+                stop_tun()
+            else:
+                tun_parser.print_help()
+                
+        elif args.command == "run":
+            run_app(args.app, *args.args)
+            
+    except KeyboardInterrupt:
+        print("\n" + "Cancelled by user")
+        sys.exit(0)
+    except Exception as e:
+        print_error(f"{e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
