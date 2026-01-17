@@ -30,16 +30,16 @@ class Colors:
     END = '\033[0m'
 
 def print_success(msg):
-    print(f"{Colors.GREEN}✓{Colors.END} {msg}")
+    print(f"{Colors.GREEN}✓ ✨{Colors.END} {msg}")
 
 def print_info(msg):
-    print(f"{Colors.BLUE}ℹ{Colors.END} {msg}")
+    print(f"{Colors.BLUE}ℹ 💡{Colors.END} {msg}")
 
 def print_warning(msg):
-    print(f"{Colors.YELLOW}⚠{Colors.END} {msg}")
+    print(f"{Colors.YELLOW}⚠ 🤔{Colors.END} {msg}")
 
 def print_error(msg):
-    print(f"{Colors.RED}✗{Colors.END} {msg}", file=sys.stderr)
+    print(f"{Colors.RED}✗ ❌{Colors.END} {msg}", file=sys.stderr)
 
 
 def ensure_config_dir():
@@ -257,7 +257,7 @@ def is_tun_enabled() -> bool:
 def show_status():
     """Show current status of everything"""
     print("=" * 50)
-    print("Xray CLI Status")
+    print("🔍 Xray CLI Status")
     print("=" * 50)
     
     # Check if config exists
@@ -269,21 +269,21 @@ def show_status():
     
     # Check Xray
     if is_xray_running():
-        print_success("Xray proxy: Running (SOCKS5 on 127.0.0.1:1080)")
+        print_success("Xray proxy: Running 🚀 (SOCKS5 on 127.0.0.1:1080)")
     else:
-        print_warning("Xray proxy: Stopped")
+        print_warning("Xray proxy: Stopped 💤")
     
     # Check redsocks
     if is_redsocks_running():
-        print_success("Redsocks: Running")
+        print_success("Redsocks: Running 🔄")
     else:
-        print_info("Redsocks: Stopped")
+        print_info("Redsocks: Stopped 💤")
     
     # Check TUN mode
     if is_tun_enabled():
-        print_success("TUN mode: Enabled (all traffic routed)")
+        print_success("TUN mode: Enabled 🛡️ (all traffic routed)")
     else:
-        print_info("TUN mode: Disabled")
+        print_info("TUN mode: Disabled 🔓")
     
     print("=" * 50)
 
@@ -303,7 +303,7 @@ def start_proxy():
     xray_path = find_executable("xray")
     if not xray_path:
         print_error("Xray not found! Install it first:")
-        print_info('sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install')
+        print_info('📦 sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install')
         sys.exit(1)
     
     # Check if already running
@@ -324,7 +324,7 @@ def start_proxy():
     time.sleep(1)
     
     if is_xray_running():
-        print_success("Xray started! SOCKS5 proxy on 127.0.0.1:1080")
+        print_success("Xray started! 🎉 SOCKS5 proxy on 127.0.0.1:1080")
     else:
         print_error("Failed to start Xray. Check the logs.")
         sys.exit(1)
@@ -340,7 +340,7 @@ def stop_proxy():
     
     result = subprocess.run(["pkill", "xray"], capture_output=True)
     if result.returncode == 0:
-        print_success("Xray stopped")
+        print_success("Xray stopped 🛑")
     else:
         print_warning("Failed to stop Xray")
 
@@ -359,8 +359,8 @@ def start_tun():
     redsocks_path = find_executable("redsocks")
     if not redsocks_path:
         print_error("Redsocks not found! Install it first:")
-        print_info("Arch/Manjaro: yay -S redsocks")
-        print_info("Ubuntu/Debian: sudo apt install redsocks")
+        print_info("📦 Arch/Manjaro: yay -S redsocks")
+        print_info("📦 Ubuntu/Debian: sudo apt install redsocks")
         sys.exit(1)
     
     # Check if redsocks config exists
@@ -388,7 +388,7 @@ redsocks {
     # Start redsocks if not running
     if not is_redsocks_running():
         subprocess.Popen([redsocks_path, "-c", REDSOCKS_CONFIG])
-        print_success("Redsocks started")
+        print_success("Redsocks started 🔄")
         time.sleep(1)
     else:
         print_info("Redsocks already running")
@@ -419,7 +419,7 @@ redsocks {
                        "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", 
                        "-j", "REDSOCKS"], 
                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print_success("TUN mode enabled! All TCP traffic now routed through Xray")
+        print_success("TUN mode enabled! 🛡️ All TCP traffic now routed through Xray")
     except subprocess.CalledProcessError as e:
         print_error(f"Failed to set up iptables rules: {e}")
         sys.exit(1)
@@ -444,9 +444,9 @@ def stop_tun():
     # Stop redsocks
     if is_redsocks_running():
         subprocess.run(["pkill", "redsocks"], capture_output=True)
-        print_success("Redsocks stopped")
+        print_success("Redsocks stopped 🛑")
     
-    print_success("TUN mode disabled")
+    print_success("TUN mode disabled 🔓")
 
 
 def run_app(app_name: str, *args):
@@ -479,7 +479,7 @@ def run_app(app_name: str, *args):
     env["https_proxy"] = "socks5://127.0.0.1:1080"
     env["ALL_PROXY"] = "socks5://127.0.0.1:1080"
     
-    print_info(f"Launching {app_name} with proxy...")
+    print_info(f"Launching {app_name} with proxy... 🚀")
     
     # Special handling for browsers
     if any(browser in app_name.lower() for browser in ["chromium", "chrome", "brave"]):
@@ -574,7 +574,7 @@ Examples:
         if args.command == "get-config":
             config = get_config_from_url(args.url)
             save_config(config)
-            print_success("Config saved successfully!")
+            print_success("Config saved successfully! 🎉")
             print_info(f"Server: {config['server_ip']}:{config['server_port']}")
             print_info(f"UUID: {config['uuid'][:8]}...")
             print_info(f"Security: {config['security']}")
