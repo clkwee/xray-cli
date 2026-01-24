@@ -10,7 +10,7 @@ Simple command-line tool to manage Xray proxy on Linux with an easy interactive 
 - ✅ Start/stop Xray proxy easily
 - ✅ TUN mode for system-wide routing
 - ✅ Status checking with emojis
-- ✅ Run apps with proxy
+- ✅ Run apps with proxy (working strange for now)
 - ✅ Restart proxy with one command
 
 ## Requirements
@@ -70,7 +70,7 @@ redsocks {
 
 ## Usage
 
-### 🎨 Interactive Menu (Easiest!)
+### Interactive Menu (Easiest!)
 
 Just run without any commands:
 
@@ -112,11 +112,11 @@ You'll see a menu like this:
 💡 Choose option (1-9): _
 ```
 
-Just pick a number and press Enter!
+Just pick a number and press enter.
 
 ---
 
-### ⌨️ Command-Line Mode (For Scripts & Automation)
+### Command-Line Mode (For Scripts & Automation)
 
 Use direct commands for automation or if you prefer typing commands:
 
@@ -298,9 +298,9 @@ sudo xray-cli proxy start
 
 ## Security Notes
 
-🔒 **Your UUID is like a password** - keep your vless:// URL private!
+🛡️ **Your UUID is like a password** - keep your vless:// URL private!
 
-🛡️ **Reality Protocol** - Makes your traffic look like normal HTTPS browsing, designed to bypass Deep Packet Inspection (DPI) in restrictive countries.
+🔒 **Reality Protocol** - Makes your traffic look like normal HTTPS browsing, designed to bypass Deep Packet Inspection (DPI) in restrictive countries.
 
 ## Notes
 
@@ -312,7 +312,7 @@ MIT
 
 ## Contributing
 
-Found a bug? Have a feature request? Open an issue or submit a PR!
+Found a bug? Open an issue or submit a PR.
 
 ## Support
 
