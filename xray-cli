@@ -227,6 +227,147 @@ def check_root():
         sys.exit(1)
 
 
+def interactive_menu():
+    """Show interactive menu for easy usage"""
+    while True:
+        # Clear screen more reliably
+        print("\033[2J\033[H", end="")  # ANSI escape codes
+        
+        print("=" * 50)
+        print("🔍 Xray CLI - Interactive Menu")
+        print("=" * 50)
+        print()
+        
+        # Show current status briefly
+        config = load_config()
+        if config:
+            print_info(f"Config: {config['server_ip']}:{config['server_port']}")
+        else:
+            print_warning("No config found")
+        
+        if is_xray_running():
+            print_success("Proxy: Running 🚀")
+        else:
+            print_info("Proxy: Stopped 💤")
+        
+        if is_tun_enabled():
+            print_success("TUN: Enabled 🛡️")
+        else:
+            print_info("TUN: Disabled 🔓")
+        
+        print()
+        print("=" * 50)
+        print("📋 Menu Options:")
+        print("=" * 50)
+        print()
+        print("  1. 📊 Show Detailed Status")
+        print("  2. 🚀 Start Proxy")
+        print("  3. 🛑 Stop Proxy")
+        print("  4. 🛡️  Enable TUN Mode")
+        print("  5. 🔓 Disable TUN Mode")
+        print("  6. 📥 Get/Update Config")
+        print("  7. 🏃 Run App with Proxy")
+        print("  8. 🔄 Restart Proxy")
+        print("  9. ❌ Exit")
+        print()
+        print("=" * 50)
+        
+        try:
+            choice = input("\n💡 Choose option (1-9): ").strip()
+            print()
+            
+            if choice == "1":
+                show_status()
+                input("\n✓ Press Enter to continue...")
+                
+            elif choice == "2":
+                if os.geteuid() != 0:
+                    print_warning("Starting proxy requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    start_proxy()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "3":
+                if os.geteuid() != 0:
+                    print_warning("Stopping proxy requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    stop_proxy()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "4":
+                if os.geteuid() != 0:
+                    print_warning("TUN mode requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    start_tun()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "5":
+                if os.geteuid() != 0:
+                    print_warning("Disabling TUN requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    stop_tun()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "6":
+                url = input("📥 Enter vless:// URL or subscription link: ").strip()
+                if url:
+                    try:
+                        config = get_config_from_url(url)
+                        save_config(config)
+                        print_success("Config saved successfully! 🎉")
+                        print_info(f"Server: {config['server_ip']}:{config['server_port']}")
+                    except Exception as e:
+                        print_error(f"Failed: {e}")
+                input("\n✓ Press Enter to continue...")
+                
+            elif choice == "7":
+                app = input("🏃 Enter app name (e.g., firefox): ").strip()
+                if app:
+                    args_input = input("⚙️  Extra arguments (or press Enter): ").strip()
+                    args_list = args_input.split() if args_input else []
+                    try:
+                        run_app(app, *args_list)
+                    except Exception as e:
+                        print_error(f"Failed: {e}")
+                input("\n✓ Press Enter to continue...")
+                
+            elif choice == "8":
+                if os.geteuid() != 0:
+                    print_warning("Restart requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    print_info("Restarting proxy... 🔄")
+                    stop_proxy()
+                    time.sleep(1)
+                    start_proxy()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "9":
+                print_success("Goodbye! 👋")
+                break
+                
+            else:
+                print_warning("Invalid option! Please choose 1-9")
+                input("\n✓ Press Enter to continue...")
+                
+        except KeyboardInterrupt:
+            print("\n")
+            print_success("Goodbye! 👋")
+            break
+        except Exception as e:
+            print_error(f"Error: {e}")
+            input("\n✓ Press Enter to continue...")
+
+
 def find_executable(name: str) -> Optional[str]:
     """Find if a program is installed"""
     return shutil.which(name)
@@ -248,7 +389,7 @@ def is_tun_enabled() -> bool:
     """Check if TUN mode (iptables rules) is active"""
     result = subprocess.run(
         ["iptables", "-t", "nat", "-L", "REDSOCKS"],
-        capture_output=True,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
     return result.returncode == 0
@@ -499,24 +640,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # First time setup
+  # Interactive menu (easiest!)
+  xray-cli
+  sudo xray-cli
+  
+  # Command-line usage
   xray-cli get-config "vless://your-config-url"
-  
-  # Start proxy
   sudo xray-cli proxy start
-  
-  # Check status
   xray-cli status
-  
-  # Enable system-wide routing
   sudo xray-cli tun start
-  
-  # Run a specific app with proxy
   xray-cli run firefox
-  
-  # Stop everything
-  sudo xray-cli tun stop
-  sudo xray-cli proxy stop
         """
     )
     
@@ -540,6 +673,7 @@ Examples:
     proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_action")
     proxy_subparsers.add_parser("start", help="Start Xray proxy")
     proxy_subparsers.add_parser("stop", help="Stop Xray proxy")
+    proxy_subparsers.add_parser("restart", help="Restart Xray proxy")
     
     # tun commands
     tun_parser = subparsers.add_parser(
@@ -564,10 +698,10 @@ Examples:
     
     args = parser.parse_args()
     
-    # Show help if no command given
+    # If no command given, show interactive menu
     if not args.command:
-        parser.print_help()
-        sys.exit(1)
+        interactive_menu()
+        return
     
     # Run the requested command
     try:
@@ -587,6 +721,12 @@ Examples:
                 start_proxy()
             elif args.proxy_action == "stop":
                 stop_proxy()
+            elif args.proxy_action == "restart":
+                check_root()
+                print_info("Restarting proxy... 🔄")
+                stop_proxy()
+                time.sleep(1)
+                start_proxy()
             else:
                 proxy_parser.print_help()
                 
