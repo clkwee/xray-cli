@@ -1,15 +1,20 @@
 # Xray CLI
 
-Simple command-line tool to manage Xray proxy on Linux.
+Simple command-line tool to manage Xray proxy on Linux with an easy interactive menu.
 
 ## Features
+
+- ✅ **Interactive Menu** - Just run `xray-cli` for a beginner-friendly menu
+- ✅ **Command-Line Mode** - Full command support for scripts and automation
 - ✅ Parse vless:// URLs automatically
 - ✅ Start/stop Xray proxy easily
 - ✅ TUN mode for system-wide routing
-- ✅ Status checking
+- ✅ Status checking with emojis
 - ✅ Run apps with proxy
+- ✅ Restart proxy with one command
 
 ## Requirements
+
 - Xray core
 - redsocks (for TUN mode)
 - Python 3.6+
@@ -33,12 +38,14 @@ sudo apt install redsocks
 ```
 
 ### 2. Install xray-cli
+
 ```bash
-sudo curl -L https://raw.githubusercontent.com/clkwee/xray-cli/main/xray-cli -o /usr/local/bin/xray-cli
+sudo curl -L https://raw.githubusercontent.com/hhaxar/xray-cli/main/xray-cli -o /usr/local/bin/xray-cli
 sudo chmod +x /usr/local/bin/xray-cli
 ```
 
 ### 3. Create redsocks config
+
 ```bash
 sudo nano /etc/redsocks.conf
 ```
@@ -63,49 +70,253 @@ redsocks {
 
 ## Usage
 
-### First time setup
+### 🎨 Interactive Menu (Easiest!)
+
+Just run without any commands:
+
+```bash
+# For read-only actions (status, get-config)
+xray-cli
+
+# For actions that need root (start/stop proxy, TUN mode)
+sudo xray-cli
+```
+
+You'll see a menu like this:
+
+```
+==================================================
+🔍 Xray CLI - Interactive Menu
+==================================================
+
+ℹ 💡 Config: 1.2.3.4:443
+✓ ✨ Proxy: Running 🚀
+ℹ 💡 TUN: Disabled 🔓
+
+==================================================
+📋 Menu Options:
+==================================================
+
+  1. 📊 Show Detailed Status
+  2. 🚀 Start Proxy
+  3. 🛑 Stop Proxy
+  4. 🛡️  Enable TUN Mode
+  5. 🔓 Disable TUN Mode
+  6. 📥 Get/Update Config
+  7. 🏃 Run App with Proxy
+  8. 🔄 Restart Proxy
+  9. ❌ Exit
+
+==================================================
+
+💡 Choose option (1-9): _
+```
+
+Just pick a number and press Enter!
+
+---
+
+### ⌨️ Command-Line Mode (For Scripts & Automation)
+
+Use direct commands for automation or if you prefer typing commands:
+
+#### First time setup
 ```bash
 # Get your vless:// config
 xray-cli get-config "vless://your-config-here"
+
+# Or from a subscription URL
+xray-cli get-config "https://provider.com/api/subscription/token"
 
 # Check status
 xray-cli status
 ```
 
-### Start proxy
+#### Start proxy
 ```bash
 sudo xray-cli proxy start
 ```
 
-### Enable system-wide routing (TUN mode)
+#### Stop proxy
+```bash
+sudo xray-cli proxy stop
+```
+
+#### Restart proxy
+```bash
+sudo xray-cli proxy restart
+```
+
+#### Enable system-wide routing (TUN mode)
 ```bash
 sudo xray-cli tun start
 ```
 
-### Run specific app with proxy
+#### Disable TUN mode
 ```bash
-xray-cli run firefox
-xray-cli run chromium
+sudo xray-cli tun stop
 ```
 
-### Stop everything
+#### Run specific app with proxy
+```bash
+xray-cli run firefox
+xray-cli run chromium --incognito
+```
+
+#### Check status
+```bash
+xray-cli status
+```
+
+Output:
+```
+==================================================
+🔍 Xray CLI Status
+==================================================
+✓ ✨ Config found: 1.2.3.4:443
+✓ ✨ Xray proxy: Running 🚀 (SOCKS5 on 127.0.0.1:1080)
+✓ ✨ Redsocks: Running 🔄
+✓ ✨ TUN mode: Enabled 🛡️ (all traffic routed)
+==================================================
+```
+
+## Commands Reference
+
+```
+xray-cli                              # Interactive menu
+xray-cli get-config <url>             # Save vless:// config
+xray-cli status                       # Show status
+sudo xray-cli proxy start             # Start proxy
+sudo xray-cli proxy stop              # Stop proxy
+sudo xray-cli proxy restart           # Restart proxy
+sudo xray-cli tun start               # Enable TUN mode
+sudo xray-cli tun stop                # Disable TUN mode
+xray-cli run <app> [args]             # Run app with proxy
+```
+
+## Examples
+
+### Quick Start (Interactive)
+```bash
+# 1. Run interactive menu with sudo
+sudo xray-cli
+
+# 2. Choose option 6 (Get/Update Config)
+# 3. Paste your vless:// URL
+# 4. Choose option 2 (Start Proxy)
+# 5. Done! ✓
+```
+
+### Quick Start (Command-Line)
+```bash
+# 1. Get config
+xray-cli get-config "vless://abc@server.com:443?security=reality&pbk=key"
+
+# 2. Start proxy
+sudo xray-cli proxy start
+
+# 3. Enable system-wide routing (optional)
+sudo xray-cli tun start
+
+# 4. Check it's working
+xray-cli status
+```
+
+### Run Specific Apps with Proxy
+```bash
+# Firefox
+xray-cli run firefox
+
+# Chromium in incognito
+xray-cli run chromium --incognito
+
+# Any app
+xray-cli run <app-name>
+```
+
+### Stop Everything
 ```bash
 sudo xray-cli tun stop
 sudo xray-cli proxy stop
 ```
 
-## Commands
+## How It Works
 
-- `get-config <url>` - Download and save vless:// config
-- `status` - Show current status
-- `proxy start` - Start Xray proxy
-- `proxy stop` - Stop Xray proxy
-- `tun start` - Enable TUN mode (routes all traffic)
-- `tun stop` - Disable TUN mode
-- `run <app>` - Run app with proxy
+1. **Xray** creates a SOCKS5 proxy on `127.0.0.1:1080`
+2. **Your apps** connect to this local proxy
+3. **Xray encrypts** traffic using VLESS protocol with Reality
+4. **Traffic looks like normal HTTPS** (bypasses censorship!)
+5. **TUN mode (optional)** routes ALL system traffic through the proxy
+
+## Troubleshooting
+
+### "Xray not found"
+Install Xray first:
+```bash
+sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+```
+
+### "Redsocks not found"
+Install redsocks:
+```bash
+yay -S redsocks  # Arch
+sudo apt install redsocks  # Ubuntu/Debian
+```
+
+### "Config not found"
+Run the get-config command first:
+```bash
+xray-cli get-config "vless://..."
+```
+
+### Check if proxy is working
+```bash
+# Check status
+xray-cli status
+
+# Test with curl
+curl --proxy socks5://127.0.0.1:1080 https://ipinfo.io
+```
+
+### Proxy won't start
+```bash
+# Check if xray is already running
+ps aux | grep xray
+
+# Kill old processes
+sudo pkill xray
+
+# Try again
+sudo xray-cli proxy start
+```
+
+## Configuration Files
+
+- `~/.config/xray-cli/config.json` - Your parsed vless config
+- `~/.config/xray-cli/xray.json` - Generated Xray config
+- `/etc/redsocks.conf` - Redsocks configuration
+
+## Security Notes
+
+🔒 **Your UUID is like a password** - keep your vless:// URL private!
+
+🛡️ **Reality Protocol** - Makes your traffic look like normal HTTPS browsing, designed to bypass Deep Packet Inspection (DPI) in restrictive countries.
 
 ## Notes
-This tool was created with AI assistance (Claude) based on my existing bash scripts and requirements.
+
+This tool was created with AI assistance (Claude) to simplify Xray proxy management. The code is open source and available for anyone to use, modify, or learn from.
 
 ## License
+
 MIT
+
+## Contributing
+
+Found a bug? Have a feature request? Open an issue or submit a PR!
+
+## Support
+
+For issues and questions:
+- Check the [Troubleshooting](#troubleshooting) section
+- Open an issue on GitHub
+- Read Xray documentation: https://xtls.github.io/
