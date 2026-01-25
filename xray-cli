@@ -374,9 +374,20 @@ def find_executable(name: str) -> Optional[str]:
 
 
 def is_xray_running() -> bool:
-    """Check if Xray is currently running"""
-    result = subprocess.run(["pgrep", "-f", "xray run"], capture_output=True)
-    return result.returncode == 0
+    """Check if Xray is currently running with our config"""
+    # First check if any xray process exists
+    result = subprocess.run(["pgrep", "-x", "xray"], capture_output=True)
+    if result.returncode != 0:
+        return False
+    
+    # Then verify it's running with OUR config file
+    result = subprocess.run(
+        ["ps", "aux"],
+        capture_output=True,
+        text=True
+    )
+    # Check if our specific config file is in the command line
+    return str(XRAY_CONFIG) in result.stdout
 
 
 def is_redsocks_running() -> bool:
