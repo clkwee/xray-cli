@@ -455,10 +455,12 @@ def start_proxy():
     # Write config and start
     write_xray_config(config)
     
+    # Start xray detached from terminal (survives terminal close)
     subprocess.Popen(
         [xray_path, "run", "-c", str(XRAY_CONFIG)],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
+        start_new_session=True  # ← This makes it survive terminal close!
     )
     
     # Give it a moment to start
