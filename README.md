@@ -1,4 +1,3 @@
-```markdown
 # Xray CLI
 
 Simple command-line tool to manage Xray proxy on Linux with an easy interactive menu.
