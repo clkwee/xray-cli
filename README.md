@@ -384,4 +384,3 @@ For issues and questions:
 - Check the [Troubleshooting](#troubleshooting) section
 - Open an issue on GitHub
 - Read Xray documentation: https://xtls.github.io/
-```
