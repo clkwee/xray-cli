@@ -1,3 +1,4 @@
+```markdown
 # Xray CLI
 
 Simple command-line tool to manage Xray proxy on Linux with an easy interactive menu.
@@ -6,6 +7,9 @@ Simple command-line tool to manage Xray proxy on Linux with an easy interactive 
 
 - ✅ **Interactive Menu** - Just run `xray-cli` for a beginner-friendly menu
 - ✅ **Command-Line Mode** - Full command support for scripts and automation
+- ✅ **Auto Setup** - One command to install Xray, Redsocks, and configure Redsocks
+- ✅ **Autostart** - Enable Xray (and optionally TUN mode) to start on boot
+- ✅ **Persistent TUN Mode** - Autostart remembers if you want TUN mode enabled
 - ✅ Parse vless:// URLs automatically
 - ✅ Start/stop Xray proxy easily
 - ✅ TUN mode for system-wide routing
@@ -21,7 +25,17 @@ Simple command-line tool to manage Xray proxy on Linux with an easy interactive 
 
 ## Installation
 
-### 1. Install dependencies
+### 1. Auto Setup (Recommended)
+
+This will install Xray, redsocks, and create the redsocks config file for you.
+
+```bash
+sudo xray-cli install-everything
+```
+
+### 2. Manual Installation (if not using Auto Setup)
+
+#### Install dependencies
 
 **Xray:**
 ```bash
@@ -37,14 +51,14 @@ yay -S redsocks
 sudo apt install redsocks
 ```
 
-### 2. Install xray-cli
+#### Install xray-cli
 
 ```bash
 sudo curl -L https://raw.githubusercontent.com/hhaxar/xray-cli/main/xray-cli -o /usr/local/bin/xray-cli
 sudo chmod +x /usr/local/bin/xray-cli
 ```
 
-### 3. Create redsocks config
+#### Create redsocks config (if not using auto setup)
 
 ```bash
 sudo nano /etc/redsocks.conf
@@ -70,7 +84,7 @@ redsocks {
 
 ## Usage
 
-### Interactive Menu (Easiest!)
+### Interactive Menu (Easiest)
 
 Just run without any commands:
 
@@ -78,7 +92,7 @@ Just run without any commands:
 # For read-only actions (status, get-config)
 xray-cli
 
-# For actions that need root (start/stop proxy, TUN mode)
+# For actions that need root (start/stop proxy, TUN mode, install, autostart)
 sudo xray-cli
 ```
 
@@ -92,6 +106,7 @@ You'll see a menu like this:
 ℹ 💡 Config: 1.2.3.4:443
 ✓ ✨ Proxy: Running 🚀
 ℹ 💡 TUN: Disabled 🔓
+✓ ✨ Autostart: On 🔄
 
 ==================================================
 📋 Menu Options:
@@ -105,11 +120,14 @@ You'll see a menu like this:
   6. 📥 Get/Update Config
   7. 🏃 Run App with Proxy
   8. 🔄 Restart Proxy
-  9. ❌ Exit
+  9. 🔁 Enable Autostart
+ 10. 🚫 Disable Autostart
+ 11. 📦 Install Everything (Auto Setup)
+ 12. ❌ Exit
 
 ==================================================
 
-💡 Choose option (1-9): _
+💡 Choose option (1-12): _
 ```
 
 Just pick a number and press enter.
@@ -122,7 +140,10 @@ Use direct commands for automation or if you prefer typing commands:
 
 #### First time setup
 ```bash
-# Get your vless:// config
+# Auto-install everything (recommended!)
+sudo xray-cli install-everything
+
+# Or, get your vless:// config
 xray-cli get-config "vless://your-config-here"
 
 # Or from a subscription URL
@@ -157,6 +178,21 @@ sudo xray-cli tun start
 sudo xray-cli tun stop
 ```
 
+#### Enable autostart on boot (Xray, and TUN if enabled)
+```bash
+sudo xray-cli autostart enable
+```
+
+#### Disable autostart
+```bash
+sudo xray-cli autostart disable
+```
+
+#### Check autostart status
+```bash
+xray-cli autostart status
+```
+
 #### Run specific app with proxy
 ```bash
 xray-cli run firefox
@@ -177,6 +213,7 @@ Output:
 ✓ ✨ Xray proxy: Running 🚀 (SOCKS5 on 127.0.0.1:1080)
 ✓ ✨ Redsocks: Running 🔄
 ✓ ✨ TUN mode: Enabled 🛡️ (all traffic routed)
+✓ ✨ Autostart: Enabled 🔄 (starts on boot)
 ==================================================
 ```
 
@@ -184,6 +221,7 @@ Output:
 
 ```
 xray-cli                              # Interactive menu
+sudo xray-cli install-everything      # Auto-install Xray, Redsocks & config
 xray-cli get-config <url>             # Save vless:// config
 xray-cli status                       # Show status
 sudo xray-cli proxy start             # Start proxy
@@ -191,6 +229,9 @@ sudo xray-cli proxy stop              # Stop proxy
 sudo xray-cli proxy restart           # Restart proxy
 sudo xray-cli tun start               # Enable TUN mode
 sudo xray-cli tun stop                # Disable TUN mode
+sudo xray-cli autostart enable        # Enable autostart on boot
+sudo xray-cli autostart disable       # Disable autostart
+xray-cli autostart status             # Check autostart status
 xray-cli run <app> [args]             # Run app with proxy
 ```
 
@@ -201,24 +242,33 @@ xray-cli run <app> [args]             # Run app with proxy
 # 1. Run interactive menu with sudo
 sudo xray-cli
 
-# 2. Choose option 6 (Get/Update Config)
-# 3. Paste your vless:// URL
-# 4. Choose option 2 (Start Proxy)
-# 5. Done! ✓
+# 2. Choose option 11 (Install Everything)
+# 3. Choose option 6 (Get/Update Config)
+# 4. Paste your vless:// URL
+# 5. Choose option 2 (Start Proxy)
+# 6. (Optional) Choose option 4 (Enable TUN Mode)
+# 7. (Optional) Choose option 9 (Enable Autostart)
+# 8. Done! ✓
 ```
 
 ### Quick Start (Command-Line)
 ```bash
-# 1. Get config
+# 1. Auto-install everything (recommended!)
+sudo xray-cli install-everything
+
+# 2. Get config
 xray-cli get-config "vless://abc@server.com:443?security=reality&pbk=key"
 
-# 2. Start proxy
+# 3. Start proxy
 sudo xray-cli proxy start
 
-# 3. Enable system-wide routing (optional)
+# 4. Enable system-wide routing (optional)
 sudo xray-cli tun start
 
-# 4. Check it's working
+# 5. Enable autostart (optional, remembers TUN mode preference)
+sudo xray-cli autostart enable
+
+# 6. Check it's working
 xray-cli status
 ```
 
@@ -247,6 +297,7 @@ sudo xray-cli proxy stop
 3. **Xray encrypts** traffic using VLESS protocol with Reality
 4. **Traffic looks like normal HTTPS** (bypasses censorship!)
 5. **TUN mode (optional)** routes ALL system traffic through the proxy
+6. **Autostart** uses a systemd service to launch Xray (and Redsocks/TUN) on boot, remembering your last TUN mode preference.
 
 ## Troubleshooting
 
@@ -255,6 +306,7 @@ Install Xray first:
 ```bash
 sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 ```
+Or use the new auto-setup: `sudo xray-cli install-everything`
 
 ### "Redsocks not found"
 Install redsocks:
@@ -262,6 +314,7 @@ Install redsocks:
 yay -S redsocks  # Arch
 sudo apt install redsocks  # Ubuntu/Debian
 ```
+Or use the new auto-setup: `sudo xray-cli install-everything`
 
 ### "Config not found"
 Run the get-config command first:
@@ -290,6 +343,18 @@ sudo pkill xray
 sudo xray-cli proxy start
 ```
 
+### Autostart not working
+```bash
+# Check if the service file exists
+ls /etc/systemd/system/xray-cli.service
+
+# Check service status
+systemctl status xray-cli.service
+
+# Try re-enabling autostart
+sudo xray-cli autostart enable
+```
+
 ## Configuration Files
 
 - `~/.config/xray-cli/config.json` - Your parsed vless config
@@ -304,7 +369,7 @@ sudo xray-cli proxy start
 
 ## Notes
 
-This tool was created with AI assistance (Claude) to simplify Xray proxy management. The code is open source and available for anyone to use, modify, or learn from.
+This tool was created with AI assistance (Claude) to simplify Xray proxy management. The code is open source and available for anyone to use, modify, or learn from. **The new "Install Everything" feature and enhanced autostart capabilities significantly improve ease of use and persistence.**
 
 ## License
 
@@ -320,3 +385,4 @@ For issues and questions:
 - Check the [Troubleshooting](#troubleshooting) section
 - Open an issue on GitHub
 - Read Xray documentation: https://xtls.github.io/
+```
