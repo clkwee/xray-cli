@@ -255,6 +255,11 @@ def interactive_menu():
         else:
             print_info("TUN: Disabled 🔓")
         
+        if is_autostart_enabled():
+            print_success("Autostart: On 🔄")
+        else:
+            print_info("Autostart: Off")
+        
         print()
         print("=" * 50)
         print("📋 Menu Options:")
@@ -268,12 +273,15 @@ def interactive_menu():
         print("  6. 📥 Get/Update Config")
         print("  7. 🏃 Run App with Proxy")
         print("  8. 🔄 Restart Proxy")
-        print("  9. ❌ Exit")
+        print("  9. 🔁 Enable Autostart")
+        print(" 10. 🚫 Disable Autostart")
+        print(" 11. 📦 Install Everything (Auto Setup)")
+        print(" 12. ❌ Exit")
         print()
         print("=" * 50)
         
         try:
-            choice = input("\n💡 Choose option (1-9): ").strip()
+            choice = input("\n💡 Choose option (1-12): ").strip()
             print()
             
             if choice == "1":
@@ -352,11 +360,38 @@ def interactive_menu():
                     input("\n✓ Press Enter to continue...")
                     
             elif choice == "9":
+                if os.geteuid() != 0:
+                    print_warning("Enabling autostart requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    enable_autostart()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "10":
+                if os.geteuid() != 0:
+                    print_warning("Disabling autostart requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    disable_autostart()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "11":
+                if os.geteuid() != 0:
+                    print_warning("Installation requires root privileges...")
+                    print_info("Please run: sudo xray-cli")
+                    input("\n✓ Press Enter to continue...")
+                else:
+                    install_everything()
+                    input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "12":
                 print_success("Goodbye! 👋")
                 break
                 
             else:
-                print_warning("Invalid option! Please choose 1-9")
+                print_warning("Invalid option! Please choose 1-12")
                 input("\n✓ Press Enter to continue...")
                 
         except KeyboardInterrupt:
@@ -406,6 +441,123 @@ def is_tun_enabled() -> bool:
     return result.returncode == 0
 
 
+def is_autostart_enabled() -> bool:
+    """Check if autostart is enabled"""
+    service_file = Path("/etc/systemd/system/xray-cli.service")
+    if not service_file.exists():
+        return False
+    
+    # Check if service is enabled
+    result = subprocess.run(
+        ["systemctl", "is-enabled", "xray-cli.service"],
+        capture_output=True,
+        text=True
+    )
+    return result.stdout.strip() == "enabled"
+
+
+def enable_autostart():
+    """Enable autostart on boot"""
+    check_root()
+    
+    # Check if config exists
+    config = load_config()
+    if not config:
+        print_error("No config found! Set up config first.")
+        print_info("Run: xray-cli get-config <vless-url>")
+        return
+    
+    # Check if TUN is currently enabled and save that preference
+    tun_enabled = is_tun_enabled()
+    if tun_enabled:
+        # Save preference to config
+        config["autostart_tun"] = True
+        save_config(config)
+        print_info("TUN mode is enabled - will also start on boot 🛡️")
+    else:
+        # Save preference to config
+        config["autostart_tun"] = False
+        save_config(config)
+    
+    print_info("Creating systemd service... 📝")
+    
+    # Build ExecStart command - include TUN if it was enabled
+    if tun_enabled:
+        exec_start = "/bin/bash -c '/usr/local/bin/xray-cli proxy start && sleep 2 && /usr/local/bin/xray-cli tun start'"
+        exec_stop = "/bin/bash -c '/usr/local/bin/xray-cli tun stop; /usr/local/bin/xray-cli proxy stop'"
+    else:
+        exec_start = "/usr/local/bin/xray-cli proxy start"
+        exec_stop = "/usr/local/bin/xray-cli proxy stop"
+    
+    # Create systemd service file
+    service_content = f"""[Unit]
+Description=Xray Proxy Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart={exec_start}
+ExecStop={exec_stop}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+    
+    service_file = Path("/etc/systemd/system/xray-cli.service")
+    
+    try:
+        with open(service_file, "w") as f:
+            f.write(service_content)
+        
+        # Reload systemd
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+        
+        # Enable the service
+        subprocess.run(["systemctl", "enable", "xray-cli.service"], check=True)
+        
+        print_success("Autostart enabled! 🎉")
+        if tun_enabled:
+            print_info("Xray and TUN mode will start automatically on boot")
+        else:
+            print_info("Xray will start automatically on boot")
+        print_info("To disable: sudo xray-cli autostart disable")
+        
+    except Exception as e:
+        print_error(f"Failed to enable autostart: {e}")
+
+
+def disable_autostart():
+    """Disable autostart on boot"""
+    check_root()
+    
+    service_file = Path("/etc/systemd/system/xray-cli.service")
+    
+    if not service_file.exists():
+        print_info("Autostart is not enabled")
+        return
+    
+    try:
+        # Disable the service
+        subprocess.run(["systemctl", "disable", "xray-cli.service"], check=True)
+        
+        # Stop if running
+        subprocess.run(["systemctl", "stop", "xray-cli.service"], 
+                      stdout=subprocess.DEVNULL, 
+                      stderr=subprocess.DEVNULL)
+        
+        # Remove service file
+        service_file.unlink()
+        
+        # Reload systemd
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+        
+        print_success("Autostart disabled! 🛑")
+        
+    except Exception as e:
+        print_error(f"Failed to disable autostart: {e}")
+
+
 def show_status():
     """Show current status of everything"""
     print("=" * 50)
@@ -436,6 +588,12 @@ def show_status():
         print_success("TUN mode: Enabled 🛡️ (all traffic routed)")
     else:
         print_info("TUN mode: Disabled 🔓")
+    
+    # Check autostart
+    if is_autostart_enabled():
+        print_success("Autostart: Enabled 🔄 (starts on boot)")
+    else:
+        print_info("Autostart: Disabled")
     
     print("=" * 50)
 
@@ -574,6 +732,15 @@ redsocks {
                        "-j", "REDSOCKS"], 
                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print_success("TUN mode enabled! 🛡️ All TCP traffic now routed through Xray")
+        
+        # Update autostart preference if autostart is enabled
+        if is_autostart_enabled():
+            config = load_config()
+            if config:
+                config["autostart_tun"] = True
+                save_config(config)
+                # Re-enable autostart to update the service file
+                enable_autostart()
     except subprocess.CalledProcessError as e:
         print_error(f"Failed to set up iptables rules: {e}")
         sys.exit(1)
@@ -600,7 +767,125 @@ def stop_tun():
         subprocess.run(["pkill", "redsocks"], capture_output=True)
         print_success("Redsocks stopped 🛑")
     
+    # Update autostart preference if autostart is enabled
+    if is_autostart_enabled():
+        config = load_config()
+        if config:
+            config["autostart_tun"] = False
+            save_config(config)
+            # Re-enable autostart to update the service file
+            enable_autostart()
+    
     print_success("TUN mode disabled 🔓")
+
+
+def install_everything():
+    """Install xray, redsocks, and create redsocks config automatically"""
+    check_root()
+    
+    print_info("Starting automatic installation... 📦")
+    print()
+    
+    # 1. Install Xray
+    xray_path = find_executable("xray")
+    if not xray_path:
+        print_info("Installing Xray...")
+        try:
+            install_script = subprocess.run(
+                ["bash", "-c", 'curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash -s -- install'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            print_success("Xray installed! ✅")
+        except subprocess.CalledProcessError as e:
+            print_error(f"Failed to install Xray: {e}")
+            print_info("You can install manually:")
+            print_info('sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install')
+            return
+    else:
+        print_success("Xray already installed ✅")
+    
+    # 2. Install redsocks
+    redsocks_path = find_executable("redsocks")
+    if not redsocks_path:
+        print_info("Installing redsocks...")
+        # Try to detect package manager
+        if shutil.which("yay"):
+            try:
+                subprocess.run(["yay", "-S", "--noconfirm", "redsocks"], check=True)
+                print_success("Redsocks installed! ✅")
+            except subprocess.CalledProcessError:
+                print_warning("Failed to install with yay, trying pacman...")
+                try:
+                    subprocess.run(["pacman", "-S", "--noconfirm", "redsocks"], check=True)
+                    print_success("Redsocks installed! ✅")
+                except subprocess.CalledProcessError as e:
+                    print_error(f"Failed to install redsocks: {e}")
+                    print_info("Please install manually:")
+                    print_info("Arch/Manjaro: sudo pacman -S redsocks")
+                    print_info("Ubuntu/Debian: sudo apt install redsocks")
+                    return
+        elif shutil.which("apt"):
+            try:
+                subprocess.run(["apt", "install", "-y", "redsocks"], check=True)
+                print_success("Redsocks installed! ✅")
+            except subprocess.CalledProcessError as e:
+                print_error(f"Failed to install redsocks: {e}")
+                print_info("Please install manually: sudo apt install redsocks")
+                return
+        elif shutil.which("pacman"):
+            try:
+                subprocess.run(["pacman", "-S", "--noconfirm", "redsocks"], check=True)
+                print_success("Redsocks installed! ✅")
+            except subprocess.CalledProcessError as e:
+                print_error(f"Failed to install redsocks: {e}")
+                print_info("Please install manually: sudo pacman -S redsocks")
+                return
+        else:
+            print_error("Could not detect package manager")
+            print_info("Please install redsocks manually:")
+            print_info("Arch/Manjaro: sudo pacman -S redsocks")
+            print_info("Ubuntu/Debian: sudo apt install redsocks")
+            return
+    else:
+        print_success("Redsocks already installed ✅")
+    
+    # 3. Create redsocks config file
+    redsocks_config_path = Path(REDSOCKS_CONFIG)
+    if not redsocks_config_path.exists():
+        print_info("Creating redsocks config file...")
+        redsocks_config_content = """base {
+  log_debug = on;
+  log_info = on;
+  log = "file:/var/log/redsocks.log";
+  daemon = on;
+  redirector = iptables;
+}
+redsocks {
+  local_ip = 127.0.0.1;
+  local_port = 2525;
+  ip = 127.0.0.1;
+  port = 1080;
+  type = socks5;
+}
+"""
+        try:
+            with open(redsocks_config_path, "w") as f:
+                f.write(redsocks_config_content)
+            print_success(f"Redsocks config created at {REDSOCKS_CONFIG} ✅")
+        except Exception as e:
+            print_error(f"Failed to create redsocks config: {e}")
+            return
+    else:
+        print_success("Redsocks config already exists ✅")
+    
+    print()
+    print_success("Everything installed and configured! 🎉")
+    print_info("You can now:")
+    print_info("  1. Set up your config: xray-cli get-config <vless-url>")
+    print_info("  2. Start proxy: sudo xray-cli proxy start")
+    print_info("  3. Enable TUN mode: sudo xray-cli tun start")
 
 
 def run_app(app_name: str, *args):
@@ -697,6 +982,16 @@ Examples:
     tun_subparsers.add_parser("start", help="Enable TUN mode")
     tun_subparsers.add_parser("stop", help="Disable TUN mode")
     
+    # autostart commands
+    autostart_parser = subparsers.add_parser(
+        "autostart",
+        help="Manage autostart on boot"
+    )
+    autostart_subparsers = autostart_parser.add_subparsers(dest="autostart_action")
+    autostart_subparsers.add_parser("enable", help="Enable autostart on boot")
+    autostart_subparsers.add_parser("disable", help="Disable autostart on boot")
+    autostart_subparsers.add_parser("status", help="Check autostart status")
+    
     # run command
     run_parser = subparsers.add_parser(
         "run", 
@@ -750,6 +1045,21 @@ Examples:
                 stop_tun()
             else:
                 tun_parser.print_help()
+                
+        elif args.command == "autostart":
+            if args.autostart_action == "enable":
+                enable_autostart()
+            elif args.autostart_action == "disable":
+                disable_autostart()
+            elif args.autostart_action == "status":
+                if is_autostart_enabled():
+                    print_success("Autostart is enabled 🔄")
+                    print_info("Xray will start automatically on boot")
+                else:
+                    print_info("Autostart is disabled")
+                    print_info("To enable: sudo xray-cli autostart enable")
+            else:
+                autostart_parser.print_help()
                 
         elif args.command == "run":
             run_app(args.app, *args.args)
