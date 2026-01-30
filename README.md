@@ -7,7 +7,7 @@ Simple command-line tool to manage Xray proxy on Linux with an easy interactive 
 - ✅ **Interactive Menu** - Just run `xray-cli` for a beginner-friendly menu
 - ✅ **Command-Line Mode** - Full command support for scripts and automation
 - ✅ **Auto Setup** - One command to install Xray, Redsocks, and configure Redsocks
-- ✅ **Autostart** - Enable Xray (and optionally TUN mode) to start on boot (isn't working for now)
+- ✅ **Autostart** - Enable Xray (and optionally TUN mode) to start on boot (beta)
 - ✅ **Persistent TUN Mode** - Autostart remembers if you want TUN mode enabled
 - ✅ Parse vless:// URLs automatically
 - ✅ Start/stop Xray proxy easily
