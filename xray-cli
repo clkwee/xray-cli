@@ -277,12 +277,13 @@ def interactive_menu():
         print("  9. 🔁 Enable Autostart")
         print(" 10. 🚫 Disable Autostart")
         print(" 11. 📦 Install Everything (Auto Setup)")
-        print(" 12. ❌ Exit")
+        print(" 12. 🗡️  Kill Everything (Troubleshoot)")
+        print(" 13. ❌ Exit")
         print()
         print("=" * 50)
         
         try:
-            choice = input("\n💡 Choose option (1-12): ").strip()
+            choice = input("\n💡 Choose option (1-13): ").strip()
             print()
             
             if choice == "1":
@@ -386,13 +387,22 @@ def interactive_menu():
                  else:
                      install_everything()
                      input("\n✓ Press Enter to continue...")
-                    
+            
             elif choice == "12":
+                 if os.geteuid() != 0:
+                     print_warning("Killing everything requires root privileges...")
+                     print_info("Please run: sudo xray-cli")
+                     input("\n✓ Press Enter to continue...")
+                 else:
+                     kill_everything()
+                     input("\n✓ Press Enter to continue...")
+                    
+            elif choice == "13":
                 print_success("Goodbye! 👋")
                 break
                 
             else:
-                print_warning("Invalid option! Please choose 1-12")
+                print_warning("Invalid option! Please choose 1-13")
                 input("\n✓ Press Enter to continue...")
                 
         except KeyboardInterrupt:
@@ -575,7 +585,7 @@ def install_everything():
     # Install Xray using the official script
     print_info("Installing Xray using official script...")
     try:
-        install_script_url = "https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
+        install_script_url = "https://github.com/XTLS/Xray-install/raw/main/install-release.sh  "
         subprocess.run([
             "bash", "-c", f'curl -L "{install_script_url}" | bash'
         ], check=True)
@@ -668,7 +678,7 @@ def start_proxy():
     xray_path = find_executable("xray")
     if not xray_path:
         print_error("Xray not found! Install it first:")
-        print_info('📦 sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh  )" @ install')
+        print_info('📦 sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh    )" @ install')
         print_info('Or use: sudo xray-cli install-everything')
         sys.exit(1)
     
@@ -843,6 +853,74 @@ def stop_tun():
         print_info(f"TUN state flag removed: {TUN_ENABLED_FLAG}")
 
 
+def kill_everything():
+    """Stops all Xray CLI related services, kills processes, and flushes iptables."""
+    check_root()
+    print_warning("Killing everything... 🗡️")
+    print_info("This will stop the autostart service, kill Xray and Redsocks processes, flush iptables rules, and stop the default Xray service if running.")
+
+    # 1. Disable and stop the Xray CLI autostart service
+    service_file = Path("/etc/systemd/system/xray-cli-proxy.service")
+    if service_file.exists():
+        print_info("Stopping and disabling xray-cli-proxy service...")
+        subprocess.run(["systemctl", "stop", "xray-cli-proxy.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["systemctl", "disable", "xray-cli-proxy.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        service_file.unlink(missing_ok=True) # Remove the file if it exists
+        subprocess.run(["systemctl", "daemon-reload"], check=False) # Reload systemd to acknowledge removal
+        print_success("xray-cli-proxy service stopped and disabled.")
+    else:
+        print_info("xray-cli-proxy service not found, skipping.")
+
+    # 2. Kill any Xray processes
+    print_info("Killing Xray processes...")
+    subprocess.run(["pkill", "-f", "xray"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) # Use -f to match command line
+    time.sleep(0.5) # Brief pause
+    # Double check with pgrep
+    xray_pids = subprocess.run(["pgrep", "-f", "xray"], capture_output=True, text=True).stdout.strip()
+    if xray_pids:
+        print_info(f"Force killing remaining Xray PIDs: {xray_pids}")
+        subprocess.run(["kill", "-9"] + xray_pids.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print_success("Xray processes terminated.")
+
+    # 3. Kill any Redsocks processes
+    print_info("Killing Redsocks processes...")
+    subprocess.run(["pkill", "-f", "redsocks"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) # Use -f to match command line
+    time.sleep(0.5) # Brief pause
+    # Double check with pgrep
+    redsocks_pids = subprocess.run(["pgrep", "-f", "redsocks"], capture_output=True, text=True).stdout.strip()
+    if redsocks_pids:
+        print_info(f"Force killing remaining Redsocks PIDs: {redsocks_pids}")
+        subprocess.run(["kill", "-9"] + redsocks_pids.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print_success("Redsocks processes terminated.")
+
+    # 4. Flush iptables rules related to REDSOCKS
+    print_info("Flushing iptables rules (REDSOCKS chain)...")
+    subprocess.run(["iptables", "-t", "nat", "-F", "REDSOCKS"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-t", "nat", "-X", "REDSOCKS"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Also try to remove the rule from OUTPUT chain referencing REDSOCKS (might fail if rule doesn't exist)
+    subprocess.run(["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"], 
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print_success("Iptables rules flushed.")
+
+    # 5. Stop the default Xray service installed by the official script (if running and enabled)
+    print_info("Checking for and stopping default Xray service (xray.service)...")
+    if subprocess.run(["systemctl", "is-active", "--quiet", "xray.service"]).returncode == 0:
+        print_info("Stopping xray.service...")
+        subprocess.run(["systemctl", "stop", "xray.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print_success("Default xray.service stopped.")
+    else:
+        print_info("Default xray.service is not running.")
+
+    if subprocess.run(["systemctl", "is-enabled", "--quiet", "xray.service"]).returncode == 0:
+        print_info("Disabling xray.service...")
+        subprocess.run(["systemctl", "disable", "xray.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print_success("Default xray.service disabled.")
+    else:
+        print_info("Default xray.service is not enabled.")
+
+    print_success("Everything killed! System should be clean. 🧹✨")
+
+
 def run_app(app_name: str, *args):
     """Run an app with proxy settings"""
     config = load_config()
@@ -904,6 +982,7 @@ Examples:
   xray-cli status
   sudo xray-cli tun start
   sudo xray-cli autostart enable
+  sudo xray-cli kill-everything
         """
     )
     
@@ -953,6 +1032,12 @@ Examples:
     autostart_subparsers.add_parser("enable", help="Enable autostart on boot")
     autostart_subparsers.add_parser("disable", help="Disable autostart on boot")
     autostart_subparsers.add_parser("status", help="Check autostart status")
+    
+    # kill-everything command
+    subparsers.add_parser(
+        "kill-everything",
+        help="Kill all Xray/Redsocks processes, flush iptables, stop services"
+    )
     
     # run command
     run_parser = subparsers.add_parser(
@@ -1027,6 +1112,9 @@ Examples:
                     print_info("To enable: sudo xray-cli autostart enable")
             else:
                 autostart_parser.print_help()
+                
+        elif args.command == "kill-everything":
+            kill_everything()
                 
         elif args.command == "run":
             run_app(args.app, *args.args)
