@@ -3,7 +3,6 @@
 Xray CLI - Manage Xray proxy and TUN mode
 Simple tool to manage your Xray proxy connection
 """
-
 import argparse
 import json
 import os
@@ -12,6 +11,7 @@ import sys
 import urllib.parse
 import shutil
 import time
+import base64  # ← ADDED: for base64 subscription decoding
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -20,7 +20,7 @@ CONFIG_DIR = Path.home() / ".config" / "xray-cli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 XRAY_CONFIG = CONFIG_DIR / "xray.json"
 REDSOCKS_CONFIG = "/etc/redsocks.conf"
-TUN_ENABLED_FLAG = CONFIG_DIR / "tun_enabled.flag" # New file to store TUN state
+TUN_ENABLED_FLAG = CONFIG_DIR / "tun_enabled.flag"
 
 # Colors for pretty output
 class Colors:
@@ -42,56 +42,49 @@ def print_warning(msg):
 def print_error(msg):
     print(f"{Colors.RED}✗ ❌{Colors.END} {msg}", file=sys.stderr)
 
-
 def ensure_config_dir():
-    """Make sure config directory exists"""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-
 def parse_vless_url(url: str) -> Dict[str, str]:
-    """
-    Parse vless:// URL and extract all the settings
-    
-    Format: vless://UUID@IP:PORT?params#remark
-    """
+    """Parse vless:// URL and extract all the settings"""
+    url = url.strip()  # ← FIX: Remove whitespace
     if not url.startswith("vless://"):
         raise ValueError("URL must start with vless://")
     
-    # Remove vless:// prefix
-    url = url[8:]
+    url = url[8:]  # Remove vless:// prefix
     
-    # Split by # to get remark (optional)
     if "#" in url:
         url, remark = url.split("#", 1)
     
-    # Split by ? to get parameters
     if "?" in url:
         base, params_str = url.split("?", 1)
     else:
         base = url
         params_str = ""
     
-    # Parse base: UUID@IP:PORT
     if "@" not in base:
         raise ValueError("Missing @ separator in URL")
-    
     uuid, server = base.split("@", 1)
     
-    # Parse server: IP:PORT
-    if ":" not in server:
-        raise ValueError("Missing port in URL")
+    # Handle IPv6 [address]:port or IPv4 address:port
+    if server.startswith("["):
+        if "]:" not in server:
+            raise ValueError("Invalid IPv6 format")
+        server_ip, port_str = server.rsplit("]:", 1)
+        server_ip = server_ip[1:]
+    else:
+        if ":" not in server:
+            raise ValueError("Missing port in URL")
+        parts = server.rsplit(":", 1)
+        if len(parts) != 2:
+            raise ValueError("Invalid server format")
+        server_ip, port_str = parts
     
-    parts = server.rsplit(":", 1)
-    if len(parts) != 2:
-        raise ValueError("Invalid server format")
-    
-    server_ip = parts[0]
     try:
-        server_port = int(parts[1])
+        server_port = int(port_str)
     except ValueError:
         raise ValueError("Port must be a number")
     
-    # Parse query parameters
     params = {}
     if params_str:
         for param in params_str.split("&"):
@@ -99,7 +92,7 @@ def parse_vless_url(url: str) -> Dict[str, str]:
                 key, value = param.split("=", 1)
                 params[key] = urllib.parse.unquote(value)
     
-    config = {
+    return {
         "uuid": uuid,
         "server_ip": server_ip,
         "server_port": server_port,
@@ -110,368 +103,161 @@ def parse_vless_url(url: str) -> Dict[str, str]:
         "flow": params.get("flow", "xtls-rprx-vision"),
         "spx": params.get("spx", "/"),
     }
-    
-    return config
-
 
 def generate_xray_config(vless_config: Dict) -> Dict:
     """Create the Xray JSON config file content"""
-    config = {
-        "inbounds": [
-            {
-                "listen": "127.0.0.1",
-                "port": 1080,
-                "protocol": "socks",
-                "settings": {
-                    "udp": True
+    return {
+        "inbounds": [{
+            "listen": "127.0.0.1",
+            "port": 1080,
+            "protocol": "socks",
+            "settings": {"udp": True}
+        }],
+        "outbounds": [{
+            "tag": "proxy",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": vless_config["server_ip"],
+                    "port": vless_config["server_port"],
+                    "users": [{
+                        "id": vless_config["uuid"],
+                        "encryption": "none",
+                        "flow": vless_config["flow"]
+                    }]
+                }]
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": vless_config["security"],
+                "realitySettings": {
+                    "publicKey": vless_config["pbk"],
+                    "shortId": vless_config["sid"],
+                    "fingerprint": vless_config["fp"],
+                    "spiderX": vless_config["spx"]
                 }
             }
-        ],
-        "outbounds": [
-            {
-                "tag": "proxy",
-                "protocol": "vless",
-                "settings": {
-                    "vnext": [
-                        {
-                            "address": vless_config["server_ip"],
-                            "port": vless_config["server_port"],
-                            "users": [
-                                {
-                                    "id": vless_config["uuid"],
-                                    "encryption": "none",
-                                    "flow": vless_config["flow"]
-                                }
-                            ]
-                        }
-                    ]
-                },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": vless_config["security"],
-                    "realitySettings": {
-                        "publicKey": vless_config["pbk"],
-                        "shortId": vless_config["sid"],
-                        "fingerprint": vless_config["fp"],
-                        "spiderX": vless_config["spx"]
-                    }
-                }
-            }
-        ]
+        }]
     }
-    return config
-
 
 def get_config_from_url(url: str) -> Dict:
-    """Get vless:// config from URL or parse it directly"""
+    """Get vless:// config from URL or parse it directly — FIXED VERSION"""
+    url = url.strip()
+    
     # If it's already a vless:// URL, just parse it
     if url.startswith("vless://"):
         return parse_vless_url(url)
     
-    # Otherwise, download it from the URL
     print_info(f"Fetching config from {url}...")
+    
+    # Download content
+    content = None
     try:
         import requests
-        response = requests.get(url, timeout=10)
+        response = requests.get(
+            url, 
+            timeout=15, 
+            headers={'User-Agent': 'Mozilla/5.0 (Xray-CLI/1.0)'},
+            allow_redirects=True
+        )
         response.raise_for_status()
-        vless_url = response.text.strip()
+        content = response.text.strip()
     except ImportError:
-        # Use curl if requests library not installed
         try:
             result = subprocess.run(
-                ["curl", "-sL", url],
-                capture_output=True,
-                text=True,
-                check=True
+                ["curl", "-sL", "--connect-timeout", "10", "-A", "Mozilla/5.0 (Xray-CLI/1.0)", url],
+                capture_output=True, text=True, check=True, timeout=15
             )
-            vless_url = result.stdout.strip()
+            content = result.stdout.strip()
         except FileNotFoundError:
-            raise RuntimeError("Neither 'requests' library nor 'curl' found. Install one of them.")
+            raise RuntimeError("Neither 'requests' nor 'curl' found")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to download config: {e}")
+            raise RuntimeError(f"Download failed: {e}")
     except Exception as e:
-        raise RuntimeError(f"Failed to fetch config: {e}")
+        raise RuntimeError(f"Fetch failed: {e}")
     
-    return parse_vless_url(vless_url)
-
+    if not content:
+        raise RuntimeError("Empty response from server")
+    
+    # ← FIX 1: Try base64 decode (most subscriptions are base64!)
+    try:
+        decoded = base64.b64decode(content).decode('utf-8', errors='ignore')
+        if "vless://" in decoded:
+            for line in decoded.split('\n'):
+                line = line.strip()
+                if line.startswith("vless://"):
+                    print_info("✓ Found config in base64-decoded content")
+                    return parse_vless_url(line)
+    except:
+        pass  # Not base64, continue
+    
+    # ← FIX 2: Handle multi-line plain text responses
+    for line in content.split('\n'):
+        line = line.strip()
+        if line.startswith("vless://"):
+            print_info("✓ Found config in response")
+            return parse_vless_url(line)
+    
+    # ← Debug hint
+    preview = content[:150].replace('\n', ' ')
+    raise ValueError(f"No valid vless:// URL found. Response preview: '{preview}...'")
 
 def save_config(config: Dict):
-    """Save the parsed config to disk"""
     ensure_config_dir()
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
     print_success(f"Config saved to {CONFIG_FILE}")
 
-
 def load_config() -> Optional[Dict]:
-    """Load saved config from disk"""
     if not CONFIG_FILE.exists():
         return None
     with open(CONFIG_FILE, "r") as f:
         return json.load(f)
 
-
 def write_xray_config(vless_config: Dict):
-    """Write the Xray JSON config file"""
     ensure_config_dir()
     xray_config = generate_xray_config(vless_config)
     with open(XRAY_CONFIG, "w") as f:
         json.dump(xray_config, f, indent=2)
     print_success(f"Xray config written to {XRAY_CONFIG}")
 
-
 def check_root():
-    """Check if we're running as root (needed for some commands)"""
     if os.geteuid() != 0:
         print_error("This command needs root privileges")
         print_info("Run with: sudo xray-cli ...")
         sys.exit(1)
 
-
-def interactive_menu():
-    """Show interactive menu for easy usage"""
-    while True:
-        # Clear screen more reliably
-        print("\033[2J\033[H", end="")  # ANSI escape codes
-        
-        print("=" * 50)
-        print("🔍 Xray CLI - Interactive Menu")
-        print("=" * 50)
-        print()
-        
-        # Show current status briefly
-        config = load_config()
-        if config:
-            print_info(f"Config: {config['server_ip']}:{config['server_port']}")
-        else:
-            print_warning("No config found")
-        
-        if is_xray_running():
-            print_success("Proxy: Running 🚀")
-        else:
-            print_info("Proxy: Stopped 💤")
-        
-        if is_tun_enabled():
-            print_success("TUN: Enabled 🛡️")
-        else:
-            print_info("TUN: Disabled 🔓")
-        
-        if is_autostart_enabled():
-            print_success("Autostart: On 🔄")
-        else:
-            print_info("Autostart: Off")
-        
-        print()
-        print("=" * 50)
-        print("📋 Menu Options:")
-        print("=" * 50)
-        print()
-        print("  1. 📊 Show Detailed Status")
-        print("  2. 🚀 Start Proxy")
-        print("  3. 🛑 Stop Proxy")
-        print("  4. 🛡️  Enable TUN Mode")
-        print("  5. 🔓 Disable TUN Mode")
-        print("  6. 📥 Get/Update Config")
-        print("  7. 🏃 Run App with Proxy")
-        print("  8. 🔄 Restart Proxy")
-        print("  9. 🔁 Enable Autostart")
-        print(" 10. 🚫 Disable Autostart")
-        print(" 11. 📦 Install Everything (Auto Setup)")
-        print(" 12. 🗡️  Kill Everything (Troubleshoot)")
-        print(" 13. ❌ Exit")
-        print()
-        print("=" * 50)
-        
-        try:
-            choice = input("\n💡 Choose option (1-13): ").strip()
-            print()
-            
-            if choice == "1":
-                show_status()
-                input("\n✓ Press Enter to continue...")
-                
-            elif choice == "2":
-                if os.geteuid() != 0:
-                    print_warning("Starting proxy requires root privileges...")
-                    print_info("Please run: sudo xray-cli")
-                    input("\n✓ Press Enter to continue...")
-                else:
-                    start_proxy()
-                    input("\n✓ Press Enter to continue...")
-                    
-            elif choice == "3":
-                if os.geteuid() != 0:
-                    print_warning("Stopping proxy requires root privileges...")
-                    print_info("Please run: sudo xray-cli")
-                    input("\n✓ Press Enter to continue...")
-                else:
-                    stop_proxy()
-                    input("\n✓ Press Enter to continue...")
-                    
-            elif choice == "4":
-                if os.geteuid() != 0:
-                    print_warning("TUN mode requires root privileges...")
-                    print_info("Please run: sudo xray-cli")
-                    input("\n✓ Press Enter to continue...")
-                else:
-                    start_tun()
-                    input("\n✓ Press Enter to continue...")
-                    
-            elif choice == "5":
-                if os.geteuid() != 0:
-                    print_warning("Disabling TUN requires root privileges...")
-                    print_info("Please run: sudo xray-cli")
-                    input("\n✓ Press Enter to continue...")
-                else:
-                    stop_tun()
-                    input("\n✓ Press Enter to continue...")
-                    
-            elif choice == "6":
-                url = input("📥 Enter vless:// URL or subscription link: ").strip()
-                if url:
-                    try:
-                        config = get_config_from_url(url)
-                        save_config(config)
-                        print_success("Config saved successfully! 🎉")
-                        print_info(f"Server: {config['server_ip']}:{config['server_port']}")
-                    except Exception as e:
-                        print_error(f"Failed: {e}")
-                input("\n✓ Press Enter to continue...")
-                
-            elif choice == "7":
-                app = input("🏃 Enter app name (e.g., firefox): ").strip()
-                if app:
-                    args_input = input("⚙️  Extra arguments (or press Enter): ").strip()
-                    args_list = args_input.split() if args_input else []
-                    try:
-                        run_app(app, *args_list)
-                    except Exception as e:
-                        print_error(f"Failed: {e}")
-                input("\n✓ Press Enter to continue...")
-                
-            elif choice == "8":
-                if os.geteuid() != 0:
-                    print_warning("Restart requires root privileges...")
-                    print_info("Please run: sudo xray-cli")
-                    input("\n✓ Press Enter to continue...")
-                else:
-                    print_info("Restarting proxy... 🔄")
-                    stop_proxy()
-                    time.sleep(1)
-                    start_proxy()
-                    input("\n✓ Press Enter to continue...")
-                    
-            elif choice == "9":
-                 if os.geteuid() != 0:
-                     print_warning("Enabling autostart requires root privileges...")
-                     print_info("Please run: sudo xray-cli")
-                     input("\n✓ Press Enter to continue...")
-                 else:
-                     enable_autostart()
-                     input("\n✓ Press Enter to continue...")
-                     
-            elif choice == "10":
-                 if os.geteuid() != 0:
-                     print_warning("Disabling autostart requires root privileges...")
-                     print_info("Please run: sudo xray-cli")
-                     input("\n✓ Press Enter to continue...")
-                 else:
-                     disable_autostart()
-                     input("\n✓ Press Enter to continue...")
-                     
-            elif choice == "11":
-                 if os.geteuid() != 0:
-                     print_warning("Installing everything requires root privileges...")
-                     print_info("Please run: sudo xray-cli")
-                     input("\n✓ Press Enter to continue...")
-                 else:
-                     install_everything()
-                     input("\n✓ Press Enter to continue...")
-            
-            elif choice == "12":
-                 if os.geteuid() != 0:
-                     print_warning("Killing everything requires root privileges...")
-                     print_info("Please run: sudo xray-cli")
-                     input("\n✓ Press Enter to continue...")
-                 else:
-                     kill_everything()
-                     input("\n✓ Press Enter to continue...")
-                    
-            elif choice == "13":
-                print_success("Goodbye! 👋")
-                break
-                
-            else:
-                print_warning("Invalid option! Please choose 1-13")
-                input("\n✓ Press Enter to continue...")
-                
-        except KeyboardInterrupt:
-            print("\n")
-            print_success("Goodbye! 👋")
-            break
-        except Exception as e:
-            print_error(f"Error: {e}")
-            input("\n✓ Press Enter to continue...")
-
-
 def find_executable(name: str) -> Optional[str]:
-    """Find if a program is installed"""
     return shutil.which(name)
 
-
 def is_xray_running() -> bool:
-    """Check if Xray is currently running with our config"""
-    # First check if any xray process exists
     result = subprocess.run(["pgrep", "-x", "xray"], capture_output=True)
     if result.returncode != 0:
         return False
-    
-    # Then verify it's running with OUR config file
-    result = subprocess.run(
-        ["ps", "aux"],
-        capture_output=True,
-        text=True
-    )
-    # Check if our specific config file is in the command line
+    result = subprocess.run(["ps", "aux"], capture_output=True, text=True)
     return str(XRAY_CONFIG) in result.stdout
 
-
 def is_redsocks_running() -> bool:
-    """Check if redsocks is currently running"""
-    result = subprocess.run(["pgrep", "redsocks"], capture_output=True)
-    return result.returncode == 0
-
+    return subprocess.run(["pgrep", "redsocks"], capture_output=True).returncode == 0
 
 def is_tun_enabled() -> bool:
-    """Check if TUN mode (iptables rules) is active"""
-    result = subprocess.run(
+    return subprocess.run(
         ["iptables", "-t", "nat", "-L", "REDSOCKS"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    return result.returncode == 0
-
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode == 0
 
 def is_autostart_enabled() -> bool:
-    """Check if autostart is enabled"""
     service_file = Path("/etc/systemd/system/xray-cli-proxy.service")
     if not service_file.exists():
         return False
-    
-    # Check if service is enabled
     result = subprocess.run(
         ["systemctl", "is-enabled", "xray-cli-proxy.service"],
-        capture_output=True,
-        text=True
+        capture_output=True, text=True
     )
     return result.stdout.strip() == "enabled"
 
-
 def enable_autostart():
-    """Enable autostart on boot using systemd"""
     check_root()
-    
-    # Check if config exists
     config = load_config()
     if not config:
         print_error("No config found! Set up config first.")
@@ -479,10 +265,6 @@ def enable_autostart():
         return
     
     print_info("Creating systemd service for autostart... 📝")
-    
-    # Create systemd service file content
-    # This service will run the script's 'proxy start' command, which handles writing the correct config file.
-    # It also checks for the TUN flag and starts TUN mode if needed.
     service_content = f"""[Unit]
 Description=Xray CLI Proxy Service
 After=network.target
@@ -496,636 +278,393 @@ ExecStop=/usr/local/bin/xray-cli proxy stop
 [Install]
 WantedBy=multi-user.target
 """
-    
     service_file = Path("/etc/systemd/system/xray-cli-proxy.service")
-    
     try:
         with open(service_file, "w") as f:
             f.write(service_content)
         print_success(f"Autostart service file created: {service_file}")
-        
-        # Reload systemd
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        
-        # Enable the service
         subprocess.run(["systemctl", "enable", "xray-cli-proxy.service"], check=True)
-        
         print_success("Autostart enabled! 🎉")
-        print_info("Xray will start automatically on boot using your saved config.")
-        print_info("If TUN mode was enabled previously, it will be restored on boot.")
-        print_info("To disable: sudo xray-cli autostart disable")
-        
     except Exception as e:
         print_error(f"Failed to enable autostart: {e}")
 
-
 def disable_autostart():
-    """Disable autostart on boot"""
     check_root()
-    
     service_file = Path("/etc/systemd/system/xray-cli-proxy.service")
-    
     if not service_file.exists():
-        print_info("Autostart is not enabled (service file not found)")
+        print_info("Autostart is not enabled")
         return
-    
     try:
-        # Disable the service
         subprocess.run(["systemctl", "disable", "xray-cli-proxy.service"], check=True)
-        
-        # Stop if running via this service
-        subprocess.run(["systemctl", "stop", "xray-cli-proxy.service"], 
-                      stdout=subprocess.DEVNULL, 
-                      stderr=subprocess.DEVNULL)
-        
-        # Remove service file
+        subprocess.run(["systemctl", "stop", "xray-cli-proxy.service"],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         service_file.unlink()
-        
-        # Reload systemd
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        
         print_success("Autostart disabled! 🛑")
-        
     except Exception as e:
         print_error(f"Failed to disable autostart: {e}")
 
-
 def install_everything():
-    """Install Xray, Redsocks, and configure Redsocks."""
     check_root()
-    print_info("Starting auto-installation process... 📦")
-
-    # Detect OS and package manager
+    print_info("Starting auto-installation... 📦")
+    
     os_release = Path("/etc/os-release").read_text()
     if "ubuntu" in os_release or "debian" in os_release:
-        pkg_manager = "apt"
-        redsocks_pkg = "redsocks"
+        pkg_manager, redsocks_pkg = "apt", "redsocks"
     elif "arch" in os_release or "manjaro" in os_release:
-        pkg_manager = "pacman"
-        redsocks_pkg = "redsocks"
-    # Add other distros here if needed (e.g., dnf for Fedora/RHEL)
+        pkg_manager, redsocks_pkg = "pacman", "redsocks"
     else:
-        print_error("Unsupported Linux distribution for automatic installation.")
-        print_info("Please install Xray and Redsocks manually.")
+        print_error("Unsupported distribution")
         return
-
-    # Install Redsocks
-    print_info(f"Installing Redsocks using {pkg_manager}...")
+    
+    print_info(f"Installing Redsocks via {pkg_manager}...")
     try:
         if pkg_manager == "apt":
             subprocess.run(["apt", "update"], check=True)
             subprocess.run(["apt", "install", "-y", redsocks_pkg], check=True)
-        elif pkg_manager == "pacman":
+        else:
             subprocess.run(["pacman", "-Sy", "--noconfirm", redsocks_pkg], check=True)
-        print_success("Redsocks installed successfully! ✅")
-    except subprocess.CalledProcessError as e:
-        print_error(f"Failed to install Redsocks: {e}")
+        print_success("Redsocks installed! ✅")
+    except Exception as e:
+        print_error(f"Redsocks install failed: {e}")
         return
-
-    # Install Xray using the official script
-    print_info("Installing Xray using official script...")
+    
+    print_info("Installing Xray...")
     try:
-        install_script_url = "https://github.com/XTLS/Xray-install/raw/main/install-release.sh  "
         subprocess.run([
-            "bash", "-c", f'curl -L "{install_script_url}" | bash'
+            "bash", "-c", 'curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash'
         ], check=True)
-        print_success("Xray installed successfully! ✅")
-    except subprocess.CalledProcessError as e:
-        print_error(f"Failed to install Xray: {e}")
+        print_success("Xray installed! ✅")
+    except Exception as e:
+        print_error(f"Xray install failed: {e}")
         return
-
-    # Write default Redsocks config
-    print_info("Writing default Redsocks configuration...")
-    redsocks_config_content = """base {
-  log_debug = on;
-  log_info = on;
-  log = "file:/var/log/redsocks.log";
-  daemon = on;
-  redirector = iptables;
+    
+    redsocks_config = """base {
+    log_debug = on;
+    log_info = on;
+    log = "file:/var/log/redsocks.log";
+    daemon = on;
+    redirector = iptables;
 }
 redsocks {
-  local_ip = 127.0.0.1;
-  local_port = 2525;
-  ip = 127.0.0.1;
-  port = 1080;
-  type = socks5;
+    local_ip = 127.0.0.1;
+    local_port = 2525;
+    ip = 127.0.0.1;
+    port = 1080;
+    type = socks5;
 }
 """
     try:
-        Path(REDSOCKS_CONFIG).parent.mkdir(parents=True, exist_ok=True) # Ensure parent dir exists
+        Path(REDSOCKS_CONFIG).parent.mkdir(parents=True, exist_ok=True)
         with open(REDSOCKS_CONFIG, "w") as f:
-            f.write(redsocks_config_content)
-        print_success(f"Redsocks configuration written to {REDSOCKS_CONFIG} ✅")
+            f.write(redsocks_config)
+        print_success(f"Redsocks config written to {REDSOCKS_CONFIG} ✅")
     except IOError as e:
         print_error(f"Failed to write Redsocks config: {e}")
-        return
-
-    print_success("Installation complete! 🎉 You can now start configuring your proxy.")
-
 
 def show_status():
-    """Show current status of everything"""
     print("=" * 50)
     print("🔍 Xray CLI Status")
     print("=" * 50)
-    
-    # Check if config exists
     config = load_config()
     if config:
-        print_success(f"Config found: {config['server_ip']}:{config['server_port']}")
+        print_success(f"Config: {config['server_ip']}:{config['server_port']}")
     else:
-        print_warning("No config found (run 'get-config' first)")
+        print_warning("No config found")
     
-    # Check Xray
-    if is_xray_running():
-        print_success("Xray proxy: Running 🚀 (SOCKS5 on 127.0.0.1:1080)")
-    else:
-        print_warning("Xray proxy: Stopped 💤")
-    
-    # Check redsocks
-    if is_redsocks_running():
-        print_success("Redsocks: Running 🔄")
-    else:
-        print_info("Redsocks: Stopped 💤")
-    
-    # Check TUN mode
-    if is_tun_enabled():
-        print_success("TUN mode: Enabled 🛡️ (all traffic routed)")
-    else:
-        print_info("TUN mode: Disabled 🔓")
-    
-    # Check autostart
-    if is_autostart_enabled():
-        print_success("Autostart: Enabled 🔄 (starts on boot)")
-    else:
-        print_info("Autostart: Disabled")
-    
+    print_success("Xray: Running 🚀") if is_xray_running() else print_warning("Xray: Stopped 💤")
+    print_success("Redsocks: Running 🔄") if is_redsocks_running() else print_info("Redsocks: Stopped 💤")
+    print_success("TUN: Enabled 🛡️") if is_tun_enabled() else print_info("TUN: Disabled 🔓")
+    print_success("Autostart: On 🔄") if is_autostart_enabled() else print_info("Autostart: Off")
     print("=" * 50)
 
-
-def start_proxy():
-    """Start the Xray proxy"""
-    check_root()
-    
-    # Check if we have a config
-    config = load_config()
-    if not config:
-        print_error("No config found!")
-        print_info("First run: xray-cli get-config <your-vless-url>")
-        sys.exit(1)
-    
-    # Make sure xray is installed
-    xray_path = find_executable("xray")
-    if not xray_path:
-        print_error("Xray not found! Install it first:")
-        print_info('📦 sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh    )" @ install')
-        print_info('Or use: sudo xray-cli install-everything')
-        sys.exit(1)
-    
-    # Check if already running
-    if is_xray_running():
-        print_warning("Xray is already running!")
-        # If it's already running, check if TUN should be enabled based on the flag
-        if TUN_ENABLED_FLAG.exists():
-            print_info("TUN state flag found. Checking TUN status...")
-            if not is_tun_enabled():
-                print_info("TUN mode is not active but was previously enabled. Attempting to start TUN...")
-                # Note: This is a bit of a loop, ideally the flag should be checked before starting proxy.
-                # But for manual start, this might help.
-                # A better way is to always call start_tun after start_proxy if flag exists.
-                # Let's adjust the logic slightly for manual start.
-                # We won't auto-start TUN here during proxy start, only during boot via autostart.
-                print_info("TUN mode state flag detected. Remember to manually enable TUN if needed: sudo xray-cli tun start")
-        return
-    
-    # Write config and start
-    write_xray_config(config)
-    
-    # Start xray detached from terminal (survives terminal close)
-    subprocess.Popen(
-        [xray_path, "run", "-c", str(XRAY_CONFIG)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True  # ← This makes it survive terminal close!
-    )
-    
-    # Give it a moment to start
-    time.sleep(1)
-    
-    if is_xray_running():
-        print_success("Xray started! 🎉 SOCKS5 proxy on 127.0.0.1:1080")
-        # After Xray starts, check the flag and start TUN if it existed before boot
-        # This is the key part for persistence when started via autostart
-        if TUN_ENABLED_FLAG.exists():
-             print_info("TUN state flag found. Attempting to start TUN mode...")
-             # Call start_tun without the initial Xray check, assuming proxy is ready
-             # We need to replicate the TUN logic here or call start_tun safely
-             # It's safer to call the function itself, but it will re-check proxy.
-             # Let's assume proxy is ready and call it.
-             # To avoid re-checking proxy, we could refactor start_tun to accept a parameter,
-             # but for simplicity, calling it as is should work if proxy just started.
-             try:
-                 # Ensure redsocks is available before attempting TUN
-                 redsocks_path = find_executable("redsocks")
-                 if not redsocks_path:
-                     print_error("Redsocks not found! Cannot enable TUN mode.")
-                     print_info("Install redsocks and run: sudo xray-cli tun start")
-                     return
-                 if not Path(REDSOCKS_CONFIG).exists():
-                     print_error(f"Redsocks config not found at {REDSOCKS_CONFIG}")
-                     print_info("Cannot enable TUN mode automatically.")
-                     return
-                 # Now call the full start_tun logic
-                 start_tun_logic() # We define this helper function below
-             except Exception as e:
-                 print_error(f"Failed to start TUN mode during proxy start: {e}")
-        else:
-            print_info("TUN mode was not previously enabled, skipping TUN activation.")
-    else:
-        print_error("Failed to start Xray. Check the logs.")
-        sys.exit(1)
-
-# Helper function to encapsulate the TUN setup logic, used by both start_tun and autostart
 def start_tun_logic():
-    """Internal function to perform the actual TUN setup steps."""
-    # Check for redsocks
     redsocks_path = find_executable("redsocks")
     if not redsocks_path:
         raise RuntimeError("Redsocks not found!")
-    
-    # Check if redsocks config exists
     if not Path(REDSOCKS_CONFIG).exists():
         raise RuntimeError(f"Redsocks config not found at {REDSOCKS_CONFIG}")
-
-    # Start redsocks if not running
+    
     if not is_redsocks_running():
         subprocess.Popen([redsocks_path, "-c", REDSOCKS_CONFIG])
         print_info("Redsocks started 🔄")
         time.sleep(1)
-    else:
-        print_info("Redsocks already running")
-
-    # Clean up old rules (just in case)
-    subprocess.run(
-        ["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", 
-         "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    subprocess.run(["iptables", "-t", "nat", "-F", "REDSOCKS"], 
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-t", "nat", "-X", "REDSOCKS"], 
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Set up new rules
-    subprocess.run(["iptables", "-t", "nat", "-N", "REDSOCKS"], 
-                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-t", "nat", "-A", "REDSOCKS", 
-                   "-d", "127.0.0.0/8", "-j", "RETURN"], 
-                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-t", "nat", "-A", "REDSOCKS", 
-                   "-p", "tcp", "-j", "REDIRECT", "--to-ports", "2525"], 
-                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-t", "nat", "-A", "OUTPUT", 
-                   "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", 
-                   "-j", "REDSOCKS"], 
-                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print_success("TUN mode enabled! 🛡️ All TCP traffic now routed through Xray")
-    # --- CREATE THE FLAG FILE ---
-    TUN_ENABLED_FLAG.touch(exist_ok=True)
-    print_info(f"TUN state flag created: {TUN_ENABLED_FLAG}")
-
-
-def stop_proxy():
-    """Stop the Xray proxy"""
-    check_root()
     
-    if not is_xray_running():
-        print_info("Xray is not running")
+    # Clean old rules
+    for cmd in [
+        ["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"],
+        ["iptables", "-t", "nat", "-F", "REDSOCKS"],
+        ["iptables", "-t", "nat", "-X", "REDSOCKS"]
+    ]:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # Set new rules
+    subprocess.run(["iptables", "-t", "nat", "-N", "REDSOCKS"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-t", "nat", "-A", "REDSOCKS", "-d", "127.0.0.0/8", "-j", "RETURN"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-t", "nat", "-A", "REDSOCKS", "-p", "tcp", "-j", "REDIRECT", "--to-ports", "2525"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    print_success("TUN mode enabled! 🛡️")
+    TUN_ENABLED_FLAG.touch(exist_ok=True)
+
+def start_proxy():
+    check_root()
+    config = load_config()
+    if not config:
+        print_error("No config found! Run: xray-cli get-config <url>")
+        sys.exit(1)
+    
+    xray_path = find_executable("xray")
+    if not xray_path:
+        print_error("Xray not found! Install with: sudo xray-cli install-everything")
+        sys.exit(1)
+    
+    if is_xray_running():
+        print_warning("Xray already running!")
         return
     
-    result = subprocess.run(["pkill", "xray"], capture_output=True)
-    if result.returncode == 0:
+    write_xray_config(config)
+    subprocess.Popen([xray_path, "run", "-c", str(XRAY_CONFIG)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(1)
+    
+    if is_xray_running():
+        print_success("Xray started! 🎉 SOCKS5 on 127.0.0.1:1080")
+        if TUN_ENABLED_FLAG.exists():
+            print_info("TUN flag found, attempting to enable TUN...")
+            try:
+                start_tun_logic()
+            except Exception as e:
+                print_error(f"TUN start failed: {e}")
+    else:
+        print_error("Failed to start Xray")
+        sys.exit(1)
+
+def stop_proxy():
+    check_root()
+    if not is_xray_running():
+        print_info("Xray not running")
+        return
+    if subprocess.run(["pkill", "xray"], capture_output=True).returncode == 0:
         print_success("Xray stopped 🛑")
     else:
         print_warning("Failed to stop Xray")
 
-
 def start_tun():
-    """Start TUN mode (routes all system traffic through proxy)"""
     check_root()
-    
-    # Make sure xray is running first
     if not is_xray_running():
-        print_warning("Xray is not running. Starting it first...")
+        print_warning("Xray not running, starting first...")
         start_proxy()
         time.sleep(1)
-    
-    # Call the internal logic
     start_tun_logic()
 
-
 def stop_tun():
-    """Stop TUN mode"""
     check_root()
-    
-    # Remove iptables rules
-    subprocess.run(
-        ["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", 
-         "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    subprocess.run(["iptables", "-t", "nat", "-F", "REDSOCKS"], 
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-t", "nat", "-X", "REDSOCKS"], 
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
-    # Stop redsocks
+    for cmd in [
+        ["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"],
+        ["iptables", "-t", "nat", "-F", "REDSOCKS"],
+        ["iptables", "-t", "nat", "-X", "REDSOCKS"]
+    ]:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if is_redsocks_running():
         subprocess.run(["pkill", "redsocks"], capture_output=True)
         print_success("Redsocks stopped 🛑")
-    
     print_success("TUN mode disabled 🔓")
-    # --- REMOVE THE FLAG FILE ---
     if TUN_ENABLED_FLAG.exists():
         TUN_ENABLED_FLAG.unlink()
-        print_info(f"TUN state flag removed: {TUN_ENABLED_FLAG}")
-
 
 def kill_everything():
-    """Stops all Xray CLI related services, kills processes, and flushes iptables."""
     check_root()
     print_warning("Killing everything... 🗡️")
-    print_info("This will stop the autostart service, kill Xray and Redsocks processes, flush iptables rules, and stop the default Xray service if running.")
-
-    # 1. Disable and stop the Xray CLI autostart service
-    service_file = Path("/etc/systemd/system/xray-cli-proxy.service")
-    if service_file.exists():
-        print_info("Stopping and disabling xray-cli-proxy service...")
+    
+    # Stop service
+    svc = Path("/etc/systemd/system/xray-cli-proxy.service")
+    if svc.exists():
         subprocess.run(["systemctl", "stop", "xray-cli-proxy.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["systemctl", "disable", "xray-cli-proxy.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        service_file.unlink(missing_ok=True) # Remove the file if it exists
-        subprocess.run(["systemctl", "daemon-reload"], check=False) # Reload systemd to acknowledge removal
-        print_success("xray-cli-proxy service stopped and disabled.")
-    else:
-        print_info("xray-cli-proxy service not found, skipping.")
-
-    # 2. Kill any Xray processes
-    print_info("Killing Xray processes...")
-    subprocess.run(["pkill", "-f", "xray"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) # Use -f to match command line
-    time.sleep(0.5) # Brief pause
-    # Double check with pgrep
-    xray_pids = subprocess.run(["pgrep", "-f", "xray"], capture_output=True, text=True).stdout.strip()
-    if xray_pids:
-        print_info(f"Force killing remaining Xray PIDs: {xray_pids}")
-        subprocess.run(["kill", "-9"] + xray_pids.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print_success("Xray processes terminated.")
-
-    # 3. Kill any Redsocks processes
-    print_info("Killing Redsocks processes...")
-    subprocess.run(["pkill", "-f", "redsocks"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) # Use -f to match command line
-    time.sleep(0.5) # Brief pause
-    # Double check with pgrep
-    redsocks_pids = subprocess.run(["pgrep", "-f", "redsocks"], capture_output=True, text=True).stdout.strip()
-    if redsocks_pids:
-        print_info(f"Force killing remaining Redsocks PIDs: {redsocks_pids}")
-        subprocess.run(["kill", "-9"] + redsocks_pids.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print_success("Redsocks processes terminated.")
-
-    # 4. Flush iptables rules related to REDSOCKS
-    print_info("Flushing iptables rules (REDSOCKS chain)...")
-    subprocess.run(["iptables", "-t", "nat", "-F", "REDSOCKS"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-t", "nat", "-X", "REDSOCKS"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # Also try to remove the rule from OUTPUT chain referencing REDSOCKS (might fail if rule doesn't exist)
-    subprocess.run(["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"], 
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print_success("Iptables rules flushed.")
-
-    # 5. Stop the default Xray service installed by the official script (if running and enabled)
-    print_info("Checking for and stopping default Xray service (xray.service)...")
+        svc.unlink()
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+    
+    # Kill processes
+    for proc in ["xray", "redsocks"]:
+        subprocess.run(["pkill", "-f", proc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)
+        pids = subprocess.run(["pgrep", "-f", proc], capture_output=True, text=True).stdout.strip()
+        if pids:
+            subprocess.run(["kill", "-9"] + pids.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # Flush iptables
+    for cmd in [
+        ["iptables", "-t", "nat", "-F", "REDSOCKS"],
+        ["iptables", "-t", "nat", "-X", "REDSOCKS"],
+        ["iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-m", "owner", "!", "--uid-owner", "root", "-j", "REDSOCKS"]
+    ]:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # Stop default xray.service if exists
     if subprocess.run(["systemctl", "is-active", "--quiet", "xray.service"]).returncode == 0:
-        print_info("Stopping xray.service...")
         subprocess.run(["systemctl", "stop", "xray.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print_success("Default xray.service stopped.")
-    else:
-        print_info("Default xray.service is not running.")
-
     if subprocess.run(["systemctl", "is-enabled", "--quiet", "xray.service"]).returncode == 0:
-        print_info("Disabling xray.service...")
         subprocess.run(["systemctl", "disable", "xray.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print_success("Default xray.service disabled.")
-    else:
-        print_info("Default xray.service is not enabled.")
-
-    print_success("Everything killed! System should be clean. 🧹✨")
-
+    
+    print_success("Everything killed! 🧹✨")
 
 def run_app(app_name: str, *args):
-    """Run an app with proxy settings"""
     config = load_config()
     if not config:
         print_error("No config found!")
-        print_info("First run: xray-cli get-config <your-vless-url>")
         sys.exit(1)
-    
-    # Make sure xray is running
     if not is_xray_running():
-        print_warning("Xray is not running. Starting it...")
+        print_warning("Xray not running, starting...")
         if os.geteuid() != 0:
             print_error("Need root to start Xray")
-            print_info("Run: sudo xray-cli proxy start")
             sys.exit(1)
         start_proxy()
         time.sleep(1)
     
-    # Find the app
     app_path = find_executable(app_name)
     if not app_path:
         print_error(f"{app_name} not found!")
         sys.exit(1)
     
-    # Set up proxy environment
     env = os.environ.copy()
-    env["http_proxy"] = "socks5://127.0.0.1:1080"
-    env["https_proxy"] = "socks5://127.0.0.1:1080"
-    env["ALL_PROXY"] = "socks5://127.0.0.1:1080"
-    
+    env["http_proxy"] = env["https_proxy"] = env["ALL_PROXY"] = "socks5://127.0.0.1:1080"
     print_info(f"Launching {app_name} with proxy... 🚀")
     
-    # Special handling for browsers
-    if any(browser in app_name.lower() for browser in ["chromium", "chrome", "brave"]):
-        chromium_args = [
-            app_path,
-            f"--proxy-server=socks5://127.0.0.1:1080",
-            *args
-        ]
-        subprocess.run(chromium_args, env=env)
+    if any(b in app_name.lower() for b in ["chromium", "chrome", "brave"]):
+        subprocess.run([app_path, f"--proxy-server=socks5://127.0.0.1:1080", *args], env=env)
     else:
         subprocess.run([app_path, *args], env=env)
 
+def interactive_menu():
+    while True:
+        print("\033[2J\033[H", end="")
+        print("=" * 50 + "\n🔍 Xray CLI - Interactive Menu\n" + "=" * 50 + "\n")
+        
+        config = load_config()
+        if config:
+            print_info(f"Config: {config['server_ip']}:{config['server_port']}")
+        else:
+            print_warning("No config found")
+        
+        print_success("Proxy: Running 🚀") if is_xray_running() else print_info("Proxy: Stopped 💤")
+        print_success("TUN: Enabled 🛡️") if is_tun_enabled() else print_info("TUN: Disabled 🔓")
+        print_success("Autostart: On 🔄") if is_autostart_enabled() else print_info("Autostart: Off")
+        
+        print(f"\n{'='*50}\n📋 Menu Options:\n{'='*50}\n")
+        print("  1. 📊 Show Status\n  2. 🚀 Start Proxy\n  3. 🛑 Stop Proxy\n  4. 🛡️  Enable TUN\n  5. 🔓 Disable TUN")
+        print("  6. 📥 Get/Update Config\n  7. 🏃 Run App with Proxy\n  8. 🔄 Restart Proxy")
+        print("  9. 🔁 Enable Autostart\n 10. 🚫 Disable Autostart\n 11. 📦 Install Everything\n 12. 🗡️  Kill Everything\n 13. ❌ Exit\n")
+        
+        try:
+            choice = input("💡 Choose option (1-13): ").strip()
+            print()
+            
+            if choice == "1": show_status(); input("\n✓ Press Enter...")
+            elif choice == "2":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: start_proxy(); input("\n✓ Press Enter...")
+            elif choice == "3":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: stop_proxy(); input("\n✓ Press Enter...")
+            elif choice == "4":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: start_tun(); input("\n✓ Press Enter...")
+            elif choice == "5":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: stop_tun(); input("\n✓ Press Enter...")
+            elif choice == "6":
+                url = input("📥 Enter vless:// URL or subscription link: ").strip()
+                if url:
+                    try:
+                        config = get_config_from_url(url.strip())
+                        save_config(config)
+                        print_success("Config saved! 🎉")
+                        print_info(f"Server: {config['server_ip']}:{config['server_port']}")
+                    except Exception as e:
+                        print_error(f"Failed: {e}")
+                    input("\n✓ Press Enter...")
+            elif choice == "7":
+                app = input("🏃 App name: ").strip()
+                if app:
+                    args_in = input("⚙️  Extra args (or Enter): ").strip()
+                    try: run_app(app, *(args_in.split() if args_in else []))
+                    except Exception as e: print_error(f"Failed: {e}")
+                    input("\n✓ Press Enter...")
+            elif choice == "8":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: print_info("Restarting... 🔄"); stop_proxy(); time.sleep(1); start_proxy(); input("\n✓ Press Enter...")
+            elif choice == "9":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: enable_autostart(); input("\n✓ Press Enter...")
+            elif choice == "10":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: disable_autostart(); input("\n✓ Press Enter...")
+            elif choice == "11":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: install_everything(); input("\n✓ Press Enter...")
+            elif choice == "12":
+                if os.geteuid() != 0: print_warning("Need root"); input("\n✓ Press Enter...")
+                else: kill_everything(); input("\n✓ Press Enter...")
+            elif choice == "13": print_success("Goodbye! 👋"); break
+            else: print_warning("Invalid option"); input("\n✓ Press Enter...")
+        except KeyboardInterrupt:
+            print("\n"); print_success("Goodbye! 👋"); break
+        except Exception as e:
+            print_error(f"Error: {e}"); input("\n✓ Press Enter...")
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Xray CLI - Easy proxy management for beginners",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Interactive menu (easiest!)
-  xray-cli
-  sudo xray-cli
-  
-  # Command-line usage
-  sudo xray-cli install-everything
-  xray-cli get-config "vless://your-config-url"
-  sudo xray-cli proxy start
-  xray-cli status
-  sudo xray-cli tun start
-  sudo xray-cli autostart enable
-  sudo xray-cli kill-everything
-        """
-    )
+    parser = argparse.ArgumentParser(description="Xray CLI - Easy proxy management")
+    subs = parser.add_subparsers(dest="command")
     
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subs.add_parser("install-everything", help="Auto-install Xray + Redsocks")
+    gc = subs.add_parser("get-config", help="Download vless config"); gc.add_argument("url")
+    subs.add_parser("status", help="Show status")
     
-    # install-everything command
-    subparsers.add_parser(
-        "install-everything",
-        help="Install Xray, Redsocks, and configure Redsocks automatically"
-    )
-
-    # get-config command
-    get_config_parser = subparsers.add_parser(
-        "get-config", 
-        help="Download and save your vless:// config"
-    )
-    get_config_parser.add_argument(
-        "url", 
-        help="URL to download config from, or paste vless:// URL directly"
-    )
+    px = subs.add_parser("proxy", help="Control proxy"); pxs = px.add_subparsers(dest="proxy_action")
+    pxs.add_parser("start"); pxs.add_parser("stop"); pxs.add_parser("restart")
     
-    # status command
-    subparsers.add_parser("status", help="Show current status of everything")
+    tn = subs.add_parser("tun", help="Control TUN mode"); tns = tn.add_subparsers(dest="tun_action")
+    tns.add_parser("start"); tns.add_parser("stop")
     
-    # proxy commands
-    proxy_parser = subparsers.add_parser("proxy", help="Control the proxy")
-    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_action")
-    proxy_subparsers.add_parser("start", help="Start Xray proxy")
-    proxy_subparsers.add_parser("stop", help="Stop Xray proxy")
-    proxy_subparsers.add_parser("restart", help="Restart Xray proxy")
+    au = subs.add_parser("autostart", help="Manage boot startup"); aus = au.add_subparsers(dest="autostart_action")
+    aus.add_parser("enable"); aus.add_parser("disable"); aus.add_parser("status")
     
-    # tun commands
-    tun_parser = subparsers.add_parser(
-        "tun", 
-        help="Control TUN mode (routes all system traffic)"
-    )
-    tun_subparsers = tun_parser.add_subparsers(dest="tun_action")
-    tun_subparsers.add_parser("start", help="Enable TUN mode")
-    tun_subparsers.add_parser("stop", help="Disable TUN mode")
+    subs.add_parser("kill-everything", help="Kill all processes + flush rules")
     
-    # autostart commands
-    autostart_parser = subparsers.add_parser(
-        "autostart",
-        help="Manage autostart on boot using systemd"
-    )
-    autostart_subparsers = autostart_parser.add_subparsers(dest="autostart_action")
-    autostart_subparsers.add_parser("enable", help="Enable autostart on boot")
-    autostart_subparsers.add_parser("disable", help="Disable autostart on boot")
-    autostart_subparsers.add_parser("status", help="Check autostart status")
-    
-    # kill-everything command
-    subparsers.add_parser(
-        "kill-everything",
-        help="Kill all Xray/Redsocks processes, flush iptables, stop services"
-    )
-    
-    # run command
-    run_parser = subparsers.add_parser(
-        "run", 
-        help="Run a specific app with proxy"
-    )
-    run_parser.add_argument("app", help="App name (e.g., firefox, chromium)")
-    run_parser.add_argument(
-        "args", 
-        nargs=argparse.REMAINDER, 
-        help="Extra arguments for the app"
-    )
+    rp = subs.add_parser("run", help="Run app with proxy"); rp.add_argument("app"); rp.add_argument("args", nargs=argparse.REMAINDER)
     
     args = parser.parse_args()
+    if not args.command: interactive_menu(); return
     
-    # If no command given, show interactive menu
-    if not args.command:
-        interactive_menu()
-        return
-    
-    # Run the requested command
     try:
-        if args.command == "install-everything":
-            install_everything()
-            
+        if args.command == "install-everything": install_everything()
         elif args.command == "get-config":
-            config = get_config_from_url(args.url)
+            config = get_config_from_url(args.url.strip())  # ← FIX: .strip()
             save_config(config)
-            print_success("Config saved successfully! 🎉")
+            print_success("Config saved! 🎉")
             print_info(f"Server: {config['server_ip']}:{config['server_port']}")
-            print_info(f"UUID: {config['uuid'][:8]}...")
-            print_info(f"Security: {config['security']}")
-            
-        elif args.command == "status":
-            show_status()
-            
+        elif args.command == "status": show_status()
         elif args.command == "proxy":
-            if args.proxy_action == "start":
-                start_proxy()
-            elif args.proxy_action == "stop":
-                stop_proxy()
-            elif args.proxy_action == "restart":
-                check_root()
-                print_info("Restarting proxy... 🔄")
-                stop_proxy()
-                time.sleep(1)
-                start_proxy()
-            else:
-                proxy_parser.print_help()
-                
+            if args.proxy_action == "start": start_proxy()
+            elif args.proxy_action == "stop": stop_proxy()
+            elif args.proxy_action == "restart": check_root(); stop_proxy(); time.sleep(1); start_proxy()
+            else: px.print_help()
         elif args.command == "tun":
-            if args.tun_action == "start":
-                start_tun()
-            elif args.tun_action == "stop":
-                stop_tun()
-            else:
-                tun_parser.print_help()
-                
+            if args.tun_action == "start": start_tun()
+            elif args.tun_action == "stop": stop_tun()
+            else: tn.print_help()
         elif args.command == "autostart":
-            if args.autostart_action == "enable":
-                enable_autostart()
-            elif args.autostart_action == "disable":
-                disable_autostart()
+            if args.autostart_action == "enable": enable_autostart()
+            elif args.autostart_action == "disable": disable_autostart()
             elif args.autostart_action == "status":
-                if is_autostart_enabled():
-                    print_success("Autostart is enabled 🔄")
-                    print_info("Xray will start automatically on boot")
-                    if TUN_ENABLED_FLAG.exists():
-                         print_info("TUN mode will also be enabled on boot.")
-                else:
-                    print_info("Autostart is disabled")
-                    print_info("To enable: sudo xray-cli autostart enable")
-            else:
-                autostart_parser.print_help()
-                
-        elif args.command == "kill-everything":
-            kill_everything()
-                
-        elif args.command == "run":
-            run_app(args.app, *args.args)
-            
-    except KeyboardInterrupt:
-        print("\n" + "Cancelled by user")
-        sys.exit(0)
-    except Exception as e:
-        print_error(f"{e}")
-        sys.exit(1)
-
+                print_success("Autostart: Enabled 🔄") if is_autostart_enabled() else print_info("Autostart: Disabled")
+            else: au.print_help()
+        elif args.command == "kill-everything": kill_everything()
+        elif args.command == "run": run_app(args.app, *args.args)
+    except KeyboardInterrupt: print("\nCancelled"); sys.exit(0)
+    except Exception as e: print_error(f"{e}"); sys.exit(1)
 
 if __name__ == "__main__":
     main()
